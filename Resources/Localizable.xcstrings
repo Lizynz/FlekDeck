@@ -16208,6 +16208,17 @@
         }
       }
     },
+    "lc.flek.iosBeta" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iOS Beta"
+          }
+        }
+      }
+    },
     "lc.flek.layoutGrid" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -16358,6 +16369,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Search apps"
+          }
+        }
+      }
+    },
+    "lc.flek.showBetaWarning" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show Beta Warning"
           }
         }
       }

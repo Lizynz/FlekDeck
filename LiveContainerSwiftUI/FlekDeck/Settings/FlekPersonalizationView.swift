@@ -13,6 +13,9 @@ import PhotosUI
 struct FlekPersonalizationView: View {
     @AppStorage("LCBetaBannerOverride", store: LCUtils.appGroupUserDefault) private var betaBannerOverride: Int = 0
     // 0 = auto (show on beta), 1 = force on, 2 = force off
+    /// Set by tapping the title 100 times: offers the beta warning toggle on a
+    /// device that isn't on a beta, where it is otherwise hidden.
+    @AppStorage("LCBetaBannerToggleRevealed", store: LCUtils.appGroupUserDefault) private var betaToggleRevealed = false
 
     @AppStorage(FlekDeckKeys.wallpaperName, store: LCUtils.appGroupUserDefault)
     private var wallpaperDescriptor: String = FlekWallpaper.defaultDescriptor
@@ -27,6 +30,7 @@ struct FlekPersonalizationView: View {
 
     @State private var showCollection = false
     @State private var showPhotoPicker = false
+    @State private var headerTapRun = HeaderTapRun()
 
     var body: some View {
         ScrollView {
@@ -81,6 +85,16 @@ struct FlekPersonalizationView: View {
                     .background(card)
                 }
 
+                // MARK: iOS Beta
+                if BetaOverlayManager.isBetaiOS || betaToggleRevealed {
+                    VStack(alignment: .leading, spacing: 10) {
+                        sectionHeader("lc.flek.iosBeta".loc)
+                        Toggle("lc.flek.showBetaWarning".loc, isOn: betaWarningEnabled)
+                            .padding(.horizontal, 16).padding(.vertical, 12)
+                            .background(card)
+                    }
+                }
+
             }
             .padding(16)
         }
@@ -90,10 +104,7 @@ struct FlekPersonalizationView: View {
             ToolbarItem(placement: .principal) {
                 Text("lc.flek.personalization".loc)
                     .font(.headline)
-                    .onTapGesture(count: 10) {
-                        betaBannerOverride = (betaBannerOverride + 1) % 3
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    }
+                    .onTapGesture { countHeaderTap() }
             }
         }
         .sheet(isPresented: $showCollection) {
@@ -106,6 +117,56 @@ struct FlekPersonalizationView: View {
                 }
             }
         }
+    }
+
+    // MARK: iOS Beta Warning
+
+    /// The beta warning as one switch, over whichever of auto, on and off is
+    /// stored behind it.
+    private var betaWarningEnabled: Binding<Bool> {
+        Binding(
+            get: { BetaOverlayManager.isEnabled(override: betaBannerOverride) },
+            set: { betaBannerOverride = BetaOverlayManager.override(enabled: $0) }
+        )
+    }
+
+    /// Counts a run of quick taps on the title, the hidden controls for the beta
+    /// warning. One running count rather than two multi-tap gestures, because a
+    /// 10-tap gesture would fire ten times on the way to 100. The 10th tap turns
+    /// the warning off and hides the toggle again on a device that isn't on a
+    /// beta; the 100th turns the warning on and shows the toggle even there. A run
+    /// that goes on to 100 passes 10 first, so the warning goes off briefly before
+    /// it comes on.
+    private func countHeaderTap() {
+        let run = headerTapRun
+        let now = Date()
+        run.count = now.timeIntervalSince(run.lastTap) <= Self.headerTapGap ? run.count + 1 : 1
+        run.lastTap = now
+
+        switch run.count {
+        case 10:
+            betaBannerOverride = BetaOverlayManager.override(enabled: false)
+            betaToggleRevealed = false
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        case 100:
+            betaBannerOverride = BetaOverlayManager.override(enabled: true)
+            betaToggleRevealed = true
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        default:
+            break
+        }
+    }
+
+    /// The longest pause between two taps that still continues a run. Looser than
+    /// the system's multi-tap timing, which is hard to keep up for 100 taps.
+    private static let headerTapGap: TimeInterval = 0.6
+
+    /// The run of taps being counted. A class, so that counting a tap does not
+    /// re-render the page — its body decodes the wallpaper preview from disk, and
+    /// a run of 100 would do that 100 times.
+    private final class HeaderTapRun {
+        var count = 0
+        var lastTap = Date.distantPast
     }
 
     // MARK: Pieces

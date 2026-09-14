@@ -598,7 +598,7 @@ struct LCSettingsView: View {
                 .background(Color(UIColor.systemGroupedBackground))
                 .listRowInsets(EdgeInsets())
 
-                if isBetaiOS {
+                if BetaOverlayManager.isBetaiOS {
                     Section {
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.triangle.fill")
@@ -790,12 +790,6 @@ struct LCSettingsView: View {
             sharedModel.deepLink = nil
             handleURL(url: link)
         }
-    }
-
-    private var isBetaiOS: Bool {
-        guard let buildVersion = UIDevice.current.buildVersion,
-              let lastChar = buildVersion.last else { return false }
-        return lastChar.isLowercase
     }
 
     /// An external-link row. The artwork is already a full-bleed tile, so it's sized
