@@ -215,11 +215,31 @@ API_AVAILABLE(ios(16.0))
     __weak typeof(self) weakSelf = self;
     _timebaseTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
         LCGuestPlaybackProxy *proxy = weakSelf;
-        CMTimebaseRef timebase = proxy.shimLayer.controlTimebase;
-        if(!timebase) return;
+        AVSampleBufferDisplayLayer *layer = proxy.shimLayer;
+        if(!layer) return;
         uint64_t state = proxy.guestState;
-        CMTimebaseSetTime(timebase, CMTimeMakeWithSeconds((double)((state >> 1) & 0xFFFFFF) / 10.0, 600));
-        CMTimebaseSetRate(timebase, (state & 1) ? 0.0 : 1.0);
+        if(!(state & (1ULL << 63))) return;   // the guest has not answered yet
+
+        CMTime position = CMTimeMakeWithSeconds((double)((state >> 1) & 0xFFFFFF) / 10.0, 600);
+        float rate = (state & 1) ? 0.0f : 1.0f;
+
+        // Both of them. AVKit reads the position from the renderer's timebase —
+        // -[AVSampleBufferDisplayLayerPlayerController _startObservation] goes
+        // sampleBufferDisplayLayer -> sampleBufferRenderer -> timebase — while
+        // controlTimebase is the older spelling and the one we can create. Which
+        // of the two is live depends on the OS, so whichever exists is driven.
+        CMTimebaseRef control = layer.controlTimebase;
+        if(control) {
+            CMTimebaseSetTime(control, position);
+            CMTimebaseSetRate(control, rate);
+        }
+        if(@available(iOS 17.0, *)) {
+            CMTimebaseRef rendered = layer.sampleBufferRenderer.timebase;
+            if(rendered && rendered != control) {
+                CMTimebaseSetTime(rendered, position);
+                CMTimebaseSetRate(rendered, rate);
+            }
+        }
     }];
 }
 

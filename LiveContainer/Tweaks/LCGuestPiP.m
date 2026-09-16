@@ -205,8 +205,10 @@ static CGPoint gBorrowedPosition;
 typedef struct { CGFloat m[16]; } LCTransform3D;
 static LCTransform3D gBorrowedTransform;
 static CGRect gBorrowedBounds;
-/// The app's own layer, while its video is published. Its control timebase is
-/// where the playback position lives.
+/// The app's AVSampleBufferDisplayLayer, while its video is published. Its
+/// renderer's timebase is where the playback position lives — note that this is
+/// *not* the layer that gets published: that one is the FigVideoLayer below it,
+/// which carries the picture but no timebase.
 static id gTimebaseLayer;
 
 /// Publishes the guest's video as a CAContext of its own and returns its id, with
@@ -302,7 +304,6 @@ static uint32_t lcPublishVideoContext(id sourceLayer, CGSize *sizeOut) {
 
     [context setValue:sourceLayer forKey:@"layer"];
 
-    gTimebaseLayer = sourceLayer;
     gVideoContext = context;
 
     uint32_t (*getContextId)(id, SEL) = (uint32_t (*)(id, SEL))objc_msgSend;
@@ -448,6 +449,7 @@ static uint64_t lcVideoPayload(id controller) {
         }
         os_log(OS_LOG_DEFAULT, "[LCGuestPiP] video: source layer tree:\n%{public}s",
                lcLayerTreeDescription(sourceLayer, 0).UTF8String);
+        gTimebaseLayer = sourceLayer;
 
         // The video layer itself is what gets published, at its own natural size,
         // and that size is not a matter of taste — AVKit dictates it. The view it
@@ -533,6 +535,12 @@ static double lcElapsedSeconds(BOOL *pausedOut) {
         if(!timebase) timebase = getTimebase(gTimebaseLayer, @selector(controlTimebase));
     } @catch(NSException *exception) {
         return -1;
+    }
+    static BOOL reported = NO;
+    if(!reported) {
+        reported = YES;
+        NSLog(@"[LCGuestPiP] state: timebase %s on %@", timebase ? "found" : "MISSING",
+              NSStringFromClass([gTimebaseLayer class]));
     }
     if(!timebase) return -1;
     if(pausedOut && timebaseGetRate) *pausedOut = timebaseGetRate(timebase) == 0.0;
