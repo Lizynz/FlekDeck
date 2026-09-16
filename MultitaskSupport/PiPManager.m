@@ -22,6 +22,16 @@ API_AVAILABLE(ios(16.0))
 /// observation stands, and the view controller that owns this layer is let go
 /// of in more than one place.
 @property(nonatomic, strong) CALayer *observedLayer;
+/// Set from the moment PiP has been asked to start until it has finished
+/// stopping, which is a window `isPictureInPictureActive` does not cover: it is
+/// still NO throughout the start, including inside -willStart.
+///
+/// That gap matters because -willStart minimizes the window, which tells the dock
+/// a window has left the stage, which changes what is frontmost — and arming
+/// listens to exactly that. Without this the disarm that follows would release
+/// the controller AVKit is in the middle of starting, and PiP would go Active and
+/// stop again a few milliseconds later.
+@property(nonatomic) BOOL isStartingPiP;
 @end
 
 
@@ -55,41 +65,90 @@ static PiPManager* sharedInstance = nil;
     return self.pipController.isPictureInPictureActive && self.displayingDecoratedVC == vc;
 }
 
-- (instancetype)init {
-    NSError* error = nil;
-    // Deliberately not mixWithOthers: PiP has to keep running once LiveContainer
-    // is backgrounded, and a mixable session is secondary audio, which does not
-    // survive that transition.
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:&error];
-    [[AVAudioSession sharedInstance] setActive:YES withOptions:1 error:&error];
-    return self;
+/// Builds a controller bound to `vc`, ready to start but not started.
+- (void)prepareControllerForVC:(AppSceneViewController*)vc {
+    self.displayingVC = vc;
+    self.pipVideoCallViewController = [AVPictureInPictureVideoCallViewController new];
+    self.pipVideoCallViewController.preferredContentSize = vc.view.bounds.size;
+    if(vc.usesHostingControllerAPI) {
+        self.pipVideoCallContentView = [[UIView alloc] initWithFrame:self.pipVideoCallViewController.view.bounds];
+        self.pipVideoCallContentView.layer.anchorPoint = CGPointMake(0, 0);
+        self.pipVideoCallContentView.layer.position = CGPointMake(0, 0);
+        [self.pipVideoCallViewController.view addSubview:self.pipVideoCallContentView];
+    } else {
+        self.pipVideoCallContentView = vc.contentView;
+    }
+    AVPictureInPictureControllerContentSource* contentSource = [[AVPictureInPictureControllerContentSource alloc] initWithActiveVideoCallSourceView:vc.view contentViewController:self.pipVideoCallViewController];
+    self.pipController = [[AVPictureInPictureController alloc] initWithContentSource:contentSource];
+    self.pipController.canStartPictureInPictureAutomaticallyFromInline = YES;
+    self.pipController.delegate = self;
+    [self.pipController setValue:@1 forKey:@"controlsStyle"];
+}
+
+/// Readies `vc` to float without floating it.
+///
+/// `canStartPictureInPictureAutomaticallyFromInline` is what makes a window float
+/// when LiveContainer is backgrounded, and AVKit can only act on it through a
+/// controller that already exists. Building one only when PiP is chosen from a
+/// menu meant that by the time there was anything to act on, the user was already
+/// looking at the home screen. So the window in front keeps a controller ready at
+/// all times, and leaving LiveContainer is enough.
+///
+/// Only ever one: the system allows a single PiP window, and a controller armed
+/// on a window the user is not looking at would race the one they are.
+- (void)armForVC:(AppSceneViewController*)vc {
+    if(!vc) return;
+    // A live PiP window — or one on its way to being live — outranks whatever is
+    // now in front behind it. It was put there deliberately and re-arming would
+    // tear it down.
+    if(self.isPiP || self.isStartingPiP) return;
+    if(self.pipController && self.displayingVC == vc) return;
+    // On stage, but its guest has not presented a scene yet — a window is brought
+    // to the front the moment it is created, which is well before there is
+    // anything in it to float. Binding a controller to that would capture a
+    // content view that does not exist. `appSceneVCDidPresentScene:` asks again
+    // once it does.
+    if(!vc.contentView) return;
+    [self prepareControllerForVC:vc];
+}
+
+/// Drops the armed controller, unless PiP is running on it or starting.
+- (void)disarmIfInactive {
+    if(self.isPiP || self.isStartingPiP) return;
+    self.pipController = nil;
+    self.pipVideoCallViewController = nil;
+    self.pipVideoCallContentView = nil;
+    self.displayingVC = nil;
+}
+
+- (void)disarmIfInactiveForVC:(AppSceneViewController*)vc {
+    // Someone else's turn to be armed; leaving it alone is the point of asking.
+    if(self.displayingVC != vc) return;
+    [self disarmIfInactive];
 }
 
 - (void)startPiPWithVC:(AppSceneViewController*)vc {
+    // Already armed for this window, which is now the ordinary case: the window
+    // in front keeps a controller ready. Nothing to tear down and nothing to wait
+    // for, so it starts at once rather than after the two delays below.
+    if(self.pipController && self.displayingVC == vc && !self.isPiP) {
+        self.isStartingPiP = YES;
+        [self.pipController startPictureInPicture];
+        return;
+    }
+    BOOL wasActive = self.isPiP;
     [self.pipController stopPictureInPicture];
-    if(self.displayingVC) {
+    // Only a window that was really floating has to be brought back. An armed one
+    // was never minimized, and telling the dock a window has left a PiP it never
+    // entered leaves the switcher believing something that is not so.
+    if(self.displayingVC && wasActive) {
         [self.displayingDecoratedVC unminimizeWindowPiP];
         [self pictureInPictureControllerDidStopPictureInPicture:self.pipController];
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)([self.pipController isPictureInPictureActive] * 0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self.displayingVC = vc;
-        self.pipVideoCallViewController = [AVPictureInPictureVideoCallViewController new];
-        self.pipVideoCallViewController.preferredContentSize = vc.view.bounds.size;
-        if(vc.usesHostingControllerAPI) {
-            self.pipVideoCallContentView = [[UIView alloc] initWithFrame:self.pipVideoCallViewController.view.bounds];
-            //self.pipVideoCallContentView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            self.pipVideoCallContentView.layer.anchorPoint = CGPointMake(0, 0);
-            self.pipVideoCallContentView.layer.position = CGPointMake(0, 0);
-            [self.pipVideoCallViewController.view addSubview:self.pipVideoCallContentView];
-        } else {
-            self.pipVideoCallContentView = vc.contentView;
-        }
-        AVPictureInPictureControllerContentSource* contentSource =  [[AVPictureInPictureControllerContentSource alloc] initWithActiveVideoCallSourceView:vc.view contentViewController:self.pipVideoCallViewController];
-        self.pipController = [[AVPictureInPictureController alloc] initWithContentSource:contentSource];
-        self.pipController.canStartPictureInPictureAutomaticallyFromInline = YES;
-        self.pipController.delegate = self;
-        [self.pipController setValue:@1 forKey:@"controlsStyle"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wasActive * 0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self prepareControllerForVC:vc];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            self.isStartingPiP = YES;
             [self.pipController startPictureInPicture];
         });
     });
@@ -102,6 +161,28 @@ static PiPManager* sharedInstance = nil;
 
 // PIP delegate
 - (void)pictureInPictureControllerWillStartPictureInPicture:(AVPictureInPictureController *)pictureInPictureController {
+    // The one place both routes into PiP meet — chosen from a window's menu, or
+    // started by AVKit because LiveContainer was backgrounded with a window
+    // armed — and where a start AVKit began on its own is first heard about.
+    //
+    // Set before minimizing, which is what sets off the chain that would
+    // otherwise disarm this controller mid-start.
+    //
+    // No audio session is taken here. LiveContainer used to claim one — playback,
+    // not mixable, activated — on the reasoning that PiP had to keep running once
+    // the app was backgrounded and a mixable session would not survive that. What
+    // actually keeps it running is the assertion SpringBoard takes on this
+    // process for the duration:
+    //
+    //     PGProcessAssertion … PIP Visible Assertion target: <our pid>
+    //         domain:"com.apple.pictureinpicture" name:"PIPVisible"
+    //
+    // The host never plays anything, so its session only ever did one thing:
+    // interrupt the guest whose window was about to float, stopping the playback
+    // the user floated it to keep watching. If a PiP window is ever found dying
+    // on backgrounding again, take a *mixable* session rather than this one —
+    // secondary audio costs the guest nothing.
+    self.isStartingPiP = YES;
     [self.displayingDecoratedVC minimizeWindowPiP];
     if(self.displayingVC.usesHostingControllerAPI) {
         self.pipVideoCallContentView.frame = CGRectMake(0, 0, self.displayingVC.view.bounds.size.width, self.displayingVC.view.bounds.size.height);
@@ -134,6 +215,7 @@ static PiPManager* sharedInstance = nil;
     // window, the content view and the layer under observation all belong to
     // its successor now.
     if(pictureInPictureController != self.pipController) return;
+    self.isStartingPiP = NO;
     [self.displayingVC.view insertSubview:self.displayingVC.contentView atIndex:0];
     [self.displayingVC setBackgroundNotificationEnabled:true];
     // resize if needed (eg orientation differs)
@@ -170,6 +252,9 @@ static PiPManager* sharedInstance = nil;
 }
 
 - (void)pictureInPictureController:(AVPictureInPictureController *)pictureInPictureController failedToStartPictureInPictureWithError:(NSError *)error {
+    // A start that never became one: nothing is holding this controller now, and
+    // leaving the flag set would keep the window armed on it forever.
+    self.isStartingPiP = NO;
     NSLog(@"%@", error.description);
 }
 

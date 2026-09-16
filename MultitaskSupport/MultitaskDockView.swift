@@ -186,8 +186,14 @@ class AppInfoProvider {
     @Published var apps: [DockAppModel] = []
     @Published var isVisible: Bool = false
     @Published var isSwitcherBarVisible: Bool = true
-    @Published var frontmostAppUUID: String?
-    @Published var isHomeState: Bool = false
+    /// Both drive `updatePiPArming()`: between them they decide which window, if
+    /// any, should be ready to float when the user leaves FlekDeck. Observed here
+    /// rather than at each assignment because they are written from a dozen
+    /// places — launch, minimize, restore, the switcher, Close All — and a route
+    /// that forgot to tell the PiP manager would leave it armed on a window that
+    /// is no longer there.
+    @Published var frontmostAppUUID: String? { didSet { updatePiPArming() } }
+    @Published var isHomeState: Bool = false { didSet { updatePiPArming() } }
     /// Where each running app's icon sits in the home dock, in window
     /// coordinates, keyed by its home-screen item id. Written by the icons
     /// themselves as they lay out, and read by the minimize animation when a
@@ -2814,6 +2820,43 @@ class AppInfoProvider {
         ensureControlAccessible()
     }
 
+    /// Keeps the armed PiP window pointed at whatever is in front.
+    ///
+    /// The window in front is the one that should float when the user leaves
+    /// FlekDeck, so it keeps a PiP controller ready — which is the whole point of
+    /// arming: AVKit can only start PiP by itself through a controller that
+    /// already exists, and one built at the moment PiP is chosen arrives long
+    /// after the user is looking at the home screen. On the home state nothing is
+    /// on stage and nothing should float, so the controller is dropped again.
+    ///
+    /// Written to be cheap and repeatable, since it runs on every change to
+    /// either property: arming a window that is already armed does nothing, and
+    /// neither call disturbs a window that is actually floating.
+    private func updatePiPArming() {
+        guard let pipManager = PiPManager.shared else { return }
+        // A built-in page has no guest process behind it and nothing to float, so
+        // the cast failing is an ordinary answer rather than a problem.
+        guard !isHomeState,
+              let uuid = frontmostAppUUID,
+              let view = apps.first(where: { $0.appUUID == uuid })?.view,
+              !view.isHidden, view.alpha > 0.1,
+              let decoratedVC = view._viewDelegate() as? DecoratedAppSceneViewController,
+              let appSceneVC = decoratedVC.appSceneVC
+        else {
+            pipManager.disarmIfInactive()
+            return
+        }
+        pipManager.arm(forVC: appSceneVC)
+    }
+
+    /// Re-checks which window should be armed, for a caller that changed
+    /// something the answer depends on without touching either published
+    /// property — a guest presenting its scene, which is the first moment the
+    /// window in front has anything in it to float.
+    @objc public func refreshPiPArming() {
+        updatePiPArming()
+    }
+
     private func passURLSchemeToView(_ view: UIView) {
         if let launchUrl = UserDefaults.standard.string(forKey: "launchAppUrlScheme") {
             UserDefaults.standard.removeObject(forKey: "launchAppUrlScheme")
@@ -2841,8 +2884,7 @@ class AppInfoProvider {
             view.layer.removeAllAnimations()
             view.isHidden = true
             view.transform = .identity
-            // Asked through hasShared first: un-minimizing a window must not be
-            // what constructs the PiP manager. If it does not exist there is no
+            // Asked through hasShared first: if there is no manager there is no
             // PiP to stop, so the scale-in below is already the right branch.
             if PiPManager.hasShared, let pipManager = PiPManager.shared,
                let decoratedVC = view._viewDelegate(), pipManager.isPiP(withDecoratedVC: decoratedVC) {

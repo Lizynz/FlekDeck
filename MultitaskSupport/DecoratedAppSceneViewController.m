@@ -301,11 +301,8 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
         UIPasteboard.generalPasteboard.string = @(weakSelf.appSceneVC.pid).stringValue;
     }];
 
-    // Asked through hasShared first, as the dock does. Constructing the PiP
-    // manager claims the audio session — playback, not mixable, and active —
-    // and this menu is built for a look at a card, long before PiP is anywhere
-    // near being chosen: whatever else was playing stopped the moment the menu
-    // opened. If there is no manager there is no PiP, and the answer is known.
+    // Asked through hasShared first, as the dock does: if there is no manager
+    // there is no PiP, and the answer is known without building one.
     BOOL isPiPActive = PiPManager.hasShared && [PiPManager.shared isPiPWithVC:self.appSceneVC];
     UIAction *togglePiP = [UIAction actionWithTitle:isPiPActive ? @"lc.multitask.disablePip".loc : @"lc.multitask.enablePip".loc
                                               image:[UIImage systemImageNamed:isPiPActive ? @"pip.exit" : @"pip.enter"]
@@ -536,6 +533,10 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
     // the notice — not one on its way out.
     if(PiPManager.hasShared && [PiPManager.shared isPiPWithVC:vc]) {
         [PiPManager.shared stopPiP];
+    } else if(PiPManager.hasShared) {
+        // Armed but never floated. The controller is bound to a window that has
+        // gone, and holds it; dropping it lets both go.
+        [PiPManager.shared disarmIfInactiveForVC:vc];
     }
 }
 
@@ -578,6 +579,10 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kContentGraceAfterScene * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self reportContentArrived];
     });
+    // The window was brought to the front when it was created, which is before
+    // there was anything in it to float, so the arming that ran then declined.
+    // This is the moment it can be taken up.
+    [MultitaskDockManager.shared refreshPiPArming];
 }
 
 - (void)appSceneVCWillActivateScene:(AppSceneViewController *)vc {

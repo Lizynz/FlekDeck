@@ -289,6 +289,9 @@ static void LCUnstageAppFromAppGroup(NSString *bundleId, NSString *dataUUID, BOO
 @property(nonatomic) NSString *sceneID;
 @property(nonatomic) NSExtension* extension;
 @property(nonatomic, readwrite) bool isAppTerminationCleanUpCalled;
+/// Registrations on the guest's PiP requests, for as long as the guest is running.
+@property(nonatomic) NSNumber *pipStartToken;
+@property(nonatomic) NSNumber *pipStopToken;
 @end
 
 /// The device orientation to hand a guest, derived from the orientation UIKit has
@@ -608,6 +611,8 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     
     [self.view.window.windowScene _registerSettingsDiffActionArray:@[self] forKey:self.sceneID];
 
+    [self beginObservingGuestPiPRequests];
+
     if([self.delegate respondsToSelector:@selector(appSceneVCDidPresentScene:)]) {
         [self.delegate appSceneVCDidPresentScene:self];
     }
@@ -758,6 +763,7 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     _isAppTerminationCleanUpCalled = true;
 
     [_audio invalidate];
+    [self endObservingGuestPiPRequests];
 
     dispatch_async(dispatch_get_main_queue(), ^{
         // Bring the guest's container back and release the staged bundle. This
@@ -797,6 +803,73 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
         [self.delegate appSceneVCAppDidExit:self];
         [MultitaskManager unregisterMultitaskContainerWithContainer:self.dataUUID];
     });
+}
+
+#pragma mark - Guest PiP requests
+
+/// Listens for the guest asking to be put into Picture in Picture.
+///
+/// A guest cannot hold a PiP window of its own: the window's content is a scene
+/// SpringBoard creates with the requesting process as its scene client, and
+/// FrontBoard refuses to make an app extension one, so the guest's own attempt
+/// produces a window that is permanently black. LiveContainer, being an ordinary
+/// installed app, has no such trouble. So LCGuestPiP swallows the request inside
+/// the guest and posts it here instead, and the window floats the way any other
+/// window does when PiP is chosen from its card.
+///
+/// Registered once the guest is running, which is the earliest anything can ask.
+- (void)beginObservingGuestPiPRequests {
+    if(self.pipStartToken || self.pipStopToken) return;
+    // The same fixed literal keyed by container that LCAudioMute's channel uses,
+    // and for the same reason: the two processes each work the app group id out
+    // for themselves, and they only have to disagree once for every request to
+    // vanish.
+    NSString *base = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@", self.dataUUID];
+    __weak typeof(self) weakSelf = self;
+
+    int startToken = 0;
+    if(notify_register_dispatch([base stringByAppendingString:@".start"].UTF8String, &startToken,
+                                dispatch_get_main_queue(), ^(int token) {
+        [weakSelf handleGuestPiPStart];
+    }) == NOTIFY_STATUS_OK) {
+        self.pipStartToken = @(startToken);
+    }
+
+    int stopToken = 0;
+    if(notify_register_dispatch([base stringByAppendingString:@".stop"].UTF8String, &stopToken,
+                                dispatch_get_main_queue(), ^(int token) {
+        [weakSelf handleGuestPiPStop];
+    }) == NOTIFY_STATUS_OK) {
+        self.pipStopToken = @(stopToken);
+    }
+}
+
+- (void)endObservingGuestPiPRequests {
+    if(self.pipStartToken) {
+        notify_cancel(self.pipStartToken.intValue);
+        self.pipStartToken = nil;
+    }
+    if(self.pipStopToken) {
+        notify_cancel(self.pipStopToken.intValue);
+        self.pipStopToken = nil;
+    }
+}
+
+- (void)handleGuestPiPStart {
+    // Already floating: the app asked twice, or asked for something it is
+    // already getting. Starting again would take the window down and put it
+    // back up for no visible reason.
+    if(PiPManager.hasShared && [PiPManager.shared isPiPWithVC:self]) return;
+    [PiPManager.shared startPiPWithVC:self];
+}
+
+- (void)handleGuestPiPStop {
+    // Asked through hasShared first, as everywhere else: no manager, no PiP to
+    // leave. A guest asking to stop one it was never in is an ordinary case —
+    // the hook posts whatever the app asks for.
+    if(PiPManager.hasShared && [PiPManager.shared isPiPWithVC:self]) {
+        [PiPManager.shared stopPiP];
+    }
 }
 
 // Created on first use rather than at init: a window that is never touched
