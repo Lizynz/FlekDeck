@@ -88,9 +88,11 @@ API_AVAILABLE(ios(16.0))
 
 @implementation LCGuestPlaybackProxy {
     NSString *_stateName;
-    NSString *_commandName;
+    NSString *_playName;
+    NSString *_skipName;
     int _stateToken;
-    int _commandToken;
+    int _playToken;
+    int _skipToken;
     int _announceToken;
     NSTimer *_timebaseTimer;
     BOOL _locallyPaused;
@@ -100,9 +102,16 @@ API_AVAILABLE(ios(16.0))
     self = [super init];
     if(self) {
         _stateName = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.state", dataUUID];
-        _commandName = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.command", dataUUID];
+        // A name apiece. Both used to share one, with the command in the name's
+        // 64-bit state — and AVKit sends a skip and a play in the same
+        // millisecond, so the second overwrote the first before the guest could
+        // read it and the skip was simply lost. Two names cannot clobber each
+        // other.
+        _playName = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.command.play", dataUUID];
+        _skipName = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.command.skip", dataUUID];
         _stateToken = NOTIFY_TOKEN_INVALID;
-        _commandToken = NOTIFY_TOKEN_INVALID;
+        _playToken = NOTIFY_TOKEN_INVALID;
+        _skipToken = NOTIFY_TOKEN_INVALID;
         _announceToken = NOTIFY_TOKEN_INVALID;
 
         // The guest posts this whenever its playback state actually changes.
@@ -124,7 +133,8 @@ API_AVAILABLE(ios(16.0))
     [_timebaseTimer invalidate];
     if(_announceToken != NOTIFY_TOKEN_INVALID) notify_cancel(_announceToken);
     if(_stateToken != NOTIFY_TOKEN_INVALID) notify_cancel(_stateToken);
-    if(_commandToken != NOTIFY_TOKEN_INVALID) notify_cancel(_commandToken);
+    if(_playToken != NOTIFY_TOKEN_INVALID) notify_cancel(_playToken);
+    if(_skipToken != NOTIFY_TOKEN_INVALID) notify_cancel(_skipToken);
 }
 
 - (uint64_t)guestState {
@@ -138,15 +148,29 @@ API_AVAILABLE(ios(16.0))
     return state;
 }
 
-- (void)sendCommand:(uint8_t)action argument:(int64_t)argument {
-    if(_commandToken == NOTIFY_TOKEN_INVALID) {
-        int token = 0;
-        if(notify_register_check(_commandName.UTF8String, &token) != NOTIFY_STATUS_OK) return;
-        _commandToken = token;
+- (void)send:(NSString *)name token:(int *)token state:(uint64_t)state {
+    if(*token == NOTIFY_TOKEN_INVALID) {
+        int fresh = 0;
+        if(notify_register_check(name.UTF8String, &fresh) != NOTIFY_STATUS_OK) return;
+        *token = fresh;
     }
-    notify_set_state(_commandToken, (uint64_t)action | ((uint64_t)argument << 8));
-    notify_post(_commandName.UTF8String);
-    NSLog(@"[LC] PiP command %u sent to the guest", action);
+    notify_set_state(*token, state);
+    notify_post(name.UTF8String);
+}
+
+- (void)sendPlaying:(BOOL)playing {
+    [self send:_playName token:&_playToken state:(playing ? 1 : 0)];
+    NSLog(@"[LC] PiP play=%d sent to the guest", playing);
+}
+
+- (void)sendSkip:(int64_t)deciseconds {
+    // A counter in the top bits so two skips of the same size in a row are two
+    // different states, and the guest cannot mistake the second for a repeat.
+    static uint64_t sequence = 0;
+    sequence = (sequence + 1) & 0xFFFF;
+    [self send:_skipName token:&_skipToken
+         state:((uint64_t)deciseconds & 0xFFFFFFFFFFFF) | (sequence << 48)];
+    NSLog(@"[LC] PiP skip %lldds sent to the guest", (long long)deciseconds);
 }
 
 - (void)pictureInPictureController:(AVPictureInPictureController *)controller setPlaying:(BOOL)playing {
@@ -155,8 +179,12 @@ API_AVAILABLE(ios(16.0))
     // immediately — so until the guest speaks, what we just commanded is a better
     // answer than the state from before the command.
     _locallyPaused = !playing;
-    [self sendCommand:(playing ? 1 : 2) argument:0];
-    [controller invalidatePlaybackState];
+    [self sendPlaying:playing];
+    // Deliberately no invalidate here. Telling AVKit to re-read the state it has
+    // just commanded invites it to disagree with the answer and command again,
+    // and it does: play and pause alternating every couple of hundred
+    // milliseconds for as long as the window is open. The guest announces its own
+    // state when it actually changes, and that is the one thing that invalidates.
 }
 
 - (BOOL)pictureInPictureControllerIsPlaybackPaused:(AVPictureInPictureController *)controller {
@@ -203,8 +231,7 @@ API_AVAILABLE(ios(16.0))
 - (void)pictureInPictureController:(AVPictureInPictureController *)controller
                     skipByInterval:(CMTime)skipInterval
                  completionHandler:(void (^)(void))completionHandler {
-    [self sendCommand:3 argument:(int64_t)(CMTimeGetSeconds(skipInterval) * 10.0)];
-    [controller invalidatePlaybackState];
+    [self sendSkip:(int64_t)(CMTimeGetSeconds(skipInterval) * 10.0)];
     // Answered at once rather than when the guest has finished seeking: AVKit
     // holds the controls disabled until this returns, and the guest's own player
     // is what the user is watching for the result anyway.

@@ -78,7 +78,8 @@ static NSString *gStartName;
 static NSString *gStopName;
 static NSString *gEndedName;
 static NSString *gStateName;
-static NSString *gCommandName;
+static NSString *gPlayName;
+static NSString *gSkipName;
 static NSString *gVideoRectName;
 /// The app's own PiP controller and the playback delegate it gave AVKit. Every
 /// command the host's PiP window sends is answered by handing it to these, so the
@@ -238,7 +239,7 @@ static id gTimebaseLayer;
 ///
 /// A root layer draws from its own anchor point, so that is pinned to the corner
 /// for the duration and put back afterwards along with everything else.
-static uint32_t lcPublishVideoContext(id sourceLayer, CGRect videoRect, CGSize *sizeOut) {
+static uint32_t lcPublishVideoContext(id sourceLayer, CGSize *sizeOut) {
     Class contextClass = NSClassFromString(@"CAContext");
     if(!contextClass) {
         NSLog(@"[LCGuestPiP] video: no CAContext class, cannot publish");
@@ -292,25 +293,12 @@ static uint32_t lcPublishVideoContext(id sourceLayer, CGRect videoRect, CGSize *
     LCTransform3D identity = {{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}};
     setTransform(sourceLayer, @selector(setTransform:), identity);
 
-    // Cropped to the picture, by moving the layer's coordinate system rather than
-    // resizing it. The app's layer is a square with the video letterboxed inside,
-    // so published whole it gave a square context with the picture somewhere in
-    // the middle, and both sides then had to agree about where — through two
-    // coordinate spaces and a scale neither could see.
-    //
-    // A bounds origin is the crop: it moves the window the layer presents over its
-    // own sublayers, and the video container below is left exactly where it is.
-    // Changing the *size* instead does not work, which was the previous attempt —
-    // the layer is then the right shape but its contents have not moved, so the
-    // window shows the top of a taller picture, letterbox included. Sublayers do
-    // not re-fit because their parent was resized; something has to lay them out,
-    // and nothing does while the layer is a context's root.
-    void (*setBounds)(id, SEL, CGRect) = (void (*)(id, SEL, CGRect))objc_msgSend;
+    // Bounds are left alone. The layer being published is the picture already, at
+    // the natural size AVKit expects to host, so there is nothing to crop to and
+    // nothing to resize. Cropping and resizing were both tried while the app's
+    // outer layer was the one being published, and neither could work: the size
+    // was wrong by a factor no amount of framing on either side could correct.
     gBorrowedBounds = bounds;
-    if(videoRect.size.width >= 1 && videoRect.size.height >= 1) {
-        setBounds(sourceLayer, @selector(setBounds:), videoRect);
-        if(sizeOut) *sizeOut = videoRect.size;
-    }
 
     [context setValue:sourceLayer forKey:@"layer"];
 
@@ -327,6 +315,16 @@ static uint32_t lcPublishVideoContext(id sourceLayer, CGRect videoRect, CGSize *
 
 static void lcStopPublishingPlaybackState(void);
 static void lcTellAppNotFloating(void);
+static BOOL gAppBelievesItIsFloating;
+/// Whether the user wants playback running, which only the PiP window's play and
+/// pause buttons change. Deliberately not the app's own momentary state: a player
+/// reports itself paused while it seeks, so a skip arriving on the heels of
+/// another one read "it was paused already" and left it that way — which is why
+/// skipping worked about half the time.
+static BOOL gIntendedPlaying = YES;
+/// When a skip last arrived. AVKit pauses on either side of every skip press, and
+/// those pauses are its own business rather than the user's.
+static CFAbsoluteTime gLastSkipTime = 0;
 
 static void lcUnpublishVideoContext(void) {
     lcStopPublishingPlaybackState();
@@ -451,28 +449,35 @@ static uint64_t lcVideoPayload(id controller) {
         os_log(OS_LOG_DEFAULT, "[LCGuestPiP] video: source layer tree:\n%{public}s",
                lcLayerTreeDescription(sourceLayer, 0).UTF8String);
 
-        // Measured before the layer is moved, while it is still sitting in the
-        // app's own tree with all its ancestors' geometry applied.
-        // The layer is resized to this below, so from the host's side the picture
-        // is the whole of the context and there is nothing to offset or clip.
-        CGRect videoRect = lcVideoRectInLayer(sourceLayer);
-        lcPublishVideoRect(CGRectMake(0, 0, videoRect.size.width, videoRect.size.height));
-
-        CGSize size = CGSizeZero;
-        uint32_t contextId = 0;
-
-        // Borrowed if the app's video is already in a context of its own, which
-        // is the cheapest possible answer and costs nothing to ask.
-        id layerHost = lcFindFirstLayerHost(sourceLayer);
-        if(layerHost) {
-            uint32_t (*getContextId)(id, SEL) = (uint32_t (*)(id, SEL))objc_msgSend;
-            contextId = getContextId(layerHost, @selector(contextId));
-            CGRect (*getBounds)(id, SEL) = (CGRect (*)(id, SEL))objc_msgSend;
-            size = getBounds(sourceLayer, @selector(bounds)).size;
-            NSLog(@"[LCGuestPiP] video: borrowing the app's own context %u", contextId);
-        } else {
-            contextId = lcPublishVideoContext(sourceLayer, videoRect, &size);
+        // The video layer itself is what gets published, at its own natural size,
+        // and that size is not a matter of taste — AVKit dictates it. The view it
+        // hosts our context in does:
+        //
+        //     fitted = AVMakeRectWithAspectRatioInsideRect(contentDimensions,
+        //                                                  {0, 0, 1600, 1600});
+        //     hostView.frame = fitted;
+        //     hostView.transform = scale to fill its bounds;
+        //
+        // so the context is expected to be the video fitted into a 1600x1600
+        // canvas — 1600x900 for anything 16:9, which is exactly the size
+        // CoreMedia's own FigVideoLayer has. Publishing the app's outer layer
+        // instead, at its 816 points, put a context half the expected width into
+        // a frame sized for the full one, which is why the picture kept arriving
+        // small in a corner however it was cropped, offset or resized.
+        CGRect (*getBounds)(id, SEL) = (CGRect (*)(id, SEL))objc_msgSend;
+        id videoLayer = lcFindVideoLayer(sourceLayer) ?: sourceLayer;
+        CGSize size = getBounds(videoLayer, @selector(bounds)).size;
+        if(size.width < 1 || size.height < 1) {
+            NSLog(@"[LCGuestPiP] video: the picture layer has no size yet");
+            return 0;
         }
+        NSLog(@"[LCGuestPiP] video: publishing %@ at its own %dx%d",
+              NSStringFromClass([videoLayer class]), (int)size.width, (int)size.height);
+
+        // Whole of the context, so the host has nothing to offset or clip.
+        lcPublishVideoRect(CGRectMake(0, 0, size.width, size.height));
+
+        uint32_t contextId = lcPublishVideoContext(videoLayer, &size);
         if(contextId == 0) return 0;
 
         uint64_t width = (uint64_t)MIN(MAX((int)size.width, 0), 0xFFFF);
@@ -636,35 +641,87 @@ static void lcStopPublishingPlaybackState(void) {
 }
 
 /// Hands a command from the host's PiP window to the app's own playback delegate.
-static void lcHandleCommand(uint64_t command) {
+static void lcHandlePlay(BOOL playing) {
     id delegate = lcPlaybackDelegate();
-    NSLog(@"[LCGuestPiP] command %u arrived (delegate %d)", (unsigned)(command & 0xFF), delegate != nil);
+    NSLog(@"[LCGuestPiP] play=%d arrived (delegate %d)", playing, delegate != nil);
     if(!delegate) return;
-    uint8_t action = command & 0xFF;
-    // Deciseconds, signed, in the bits above the action.
-    int64_t argument = (int64_t)(command >> 8);
-    if(argument & 0x800000000000ULL) argument |= ~0xFFFFFFFFFFFFULL;
+
+    if(playing) {
+        gIntendedPlaying = YES;
+    } else {
+        // A pause is forwarded at once, so the button stays responsive, but it
+        // only counts as the user's intent if no skip turns up around it. AVKit
+        // sends setPlaying:NO both before and after every skip — its native path
+        // seeks the player controller with a shouldResumePlayback flag that the
+        // public delegate method has no room for, so it pauses, seeks, and expects
+        // the player to restart itself. Treated as intent, that pause made every
+        // skip decline to resume, which is why skipping stopped the video.
+        CFAbsoluteTime pauseTime = CFAbsoluteTimeGetCurrent();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if(gLastSkipTime >= pauseTime - 0.3) return;
+            gIntendedPlaying = NO;
+        });
+    }
 
     @try {
-        if(action == 1 || action == 2) {
-            void (*setPlaying)(id, SEL, id, BOOL) = (void (*)(id, SEL, id, BOOL))objc_msgSend;
-            setPlaying(delegate, @selector(pictureInPictureController:setPlaying:), gAppController, action == 1);
-        } else if(action == 3) {
-            void (*skip)(id, SEL, id, LCTime, void (^)(void)) =
-                (void (*)(id, SEL, id, LCTime, void (^)(void)))objc_msgSend;
-            skip(delegate, @selector(pictureInPictureController:skipByInterval:completionHandler:),
-                 gAppController, lcMakeTime((double)argument / 10.0), ^{});
+        void (*setPlaying)(id, SEL, id, BOOL) = (void (*)(id, SEL, id, BOOL))objc_msgSend;
+        setPlaying(delegate, @selector(pictureInPictureController:setPlaying:), gAppController, playing);
+    } @catch(NSException *exception) {
+        NSLog(@"[LCGuestPiP] play failed: %@", exception.name);
+    }
+    lcPublishPlaybackState();
+}
+
+static void lcHandleSkip(int64_t deciseconds) {
+    id delegate = lcPlaybackDelegate();
+    NSLog(@"[LCGuestPiP] skip %.1fs arrived (delegate %d, wants playing %d)",
+          (double)deciseconds / 10.0, delegate != nil, gIntendedPlaying);
+    if(!delegate) return;
+    gLastSkipTime = CFAbsoluteTimeGetCurrent();
+
+    @try {
+        void (*setPlaying)(id, SEL, id, BOOL) = (void (*)(id, SEL, id, BOOL))objc_msgSend;
+        BOOL (*isPaused)(id, SEL, id) = (BOOL (*)(id, SEL, id))objc_msgSend;
+
+        // Seeking stops playback and nothing starts it again: AVKit's own path
+        // seeks the player controller directly, with a shouldResumePlayback flag
+        // the public delegate method has no room for, and this app does not resume
+        // on its own. Nor does it reliably call the completion handler, so the
+        // state is checked again over the next few seconds and playing re-asserted
+        // while it is still wrong. Bounded, so it cannot fight the end of the
+        // video or a buffering stall.
+        //
+        // Driven by what the PiP window's buttons last asked for rather than by
+        // what the player says right now — a player reports itself paused while it
+        // seeks, so reading its state made a second skip decline to resume.
+        void (^resumeIfNeeded)(void) = ^{
+            if(!gIntendedPlaying || !gAppBelievesItIsFloating) return;
+            if(!isPaused(delegate, @selector(pictureInPictureControllerIsPlaybackPaused:), gAppController)) return;
+            NSLog(@"[LCGuestPiP] resuming after skip");
+            setPlaying(delegate, @selector(pictureInPictureController:setPlaying:), gAppController, YES);
+            lcPublishPlaybackState();
+        };
+
+        void (*skip)(id, SEL, id, LCTime, void (^)(void)) =
+            (void (*)(id, SEL, id, LCTime, void (^)(void)))objc_msgSend;
+        skip(delegate, @selector(pictureInPictureController:skipByInterval:completionHandler:),
+             gAppController, lcMakeTime((double)deciseconds / 10.0), ^{ resumeIfNeeded(); });
+
+        static const double retries[] = {0.4, 1.0, 1.8, 3.0};
+        for(size_t i = 0; i < sizeof(retries) / sizeof(retries[0]); i++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(retries[i] * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ resumeIfNeeded(); });
         }
     } @catch(NSException *exception) {
-        NSLog(@"[LCGuestPiP] command %u failed: %@", action, exception.name);
+        NSLog(@"[LCGuestPiP] skip failed: %@", exception.name);
     }
     lcPublishPlaybackState();
 }
 
 #pragma mark - Telling the app it is floating
 
-/// Whether the app has been told its PiP is running.
-static BOOL gAppBelievesItIsFloating = NO;
+/// Whether the app has been told its PiP is running. Declared above.
 
 /// Tells the app its Picture in Picture started, or stopped.
 ///
@@ -714,6 +771,7 @@ static void lc_startPictureInPicture(id self, SEL _cmd) {
     uint64_t payload = lcVideoPayload(self);
     NSLog(@"[LCGuestPiP] start requested, handing to host (context %u, %ux%u)",
           (uint32_t)payload, (uint32_t)((payload >> 32) & 0xFFFF), (uint32_t)((payload >> 48) & 0xFFFF));
+    gIntendedPlaying = YES;
     if(payload != 0) lcStartPublishingPlaybackState();
     lcRequestFloat(payload);
     // After the request, so the app's placeholder appears as its video leaves,
@@ -857,7 +915,10 @@ void LCGuestPiPInit(NSString *dataUUID) {
     gStopName = [base stringByAppendingString:@".stop"];
     gEndedName = [base stringByAppendingString:@".ended"];
     gStateName = [base stringByAppendingString:@".state"];
-    gCommandName = [base stringByAppendingString:@".command"];
+    // One name each. Sharing a single name lost a skip whenever AVKit sent it
+    // alongside a play, which it does in the same millisecond.
+    gPlayName = [base stringByAppendingString:@".command.play"];
+    gSkipName = [base stringByAppendingString:@".command.skip"];
     gVideoRectName = [base stringByAppendingString:@".videorect"];
 
     lcInstallHooks();
@@ -874,14 +935,22 @@ void LCGuestPiPInit(NSString *dataUUID) {
         lcUnpublishVideoContext();
     });
 
-    // Play, pause and skip, arriving from the PiP window's own controls. On the
+    // Play, pause and skip, arriving from the PiP window's own controls, on the
     // main queue because they end up inside the app's player.
-    static int commandToken;
-    uint32_t commandStatus = notify_register_dispatch(gCommandName.UTF8String, &commandToken,
+    static int playToken, skipToken;
+    uint32_t commandStatus = notify_register_dispatch(gPlayName.UTF8String, &playToken,
                                                       dispatch_get_main_queue(), ^(int token) {
-        uint64_t command = 0;
-        notify_get_state(token, &command);
-        lcHandleCommand(command);
+        uint64_t state = 0;
+        notify_get_state(token, &state);
+        lcHandlePlay((state & 1) != 0);
+    });
+    commandStatus |= notify_register_dispatch(gSkipName.UTF8String, &skipToken,
+                                              dispatch_get_main_queue(), ^(int token) {
+        uint64_t state = 0;
+        notify_get_state(token, &state);
+        int64_t deciseconds = (int64_t)(state & 0xFFFFFFFFFFFFULL);
+        if(deciseconds & 0x800000000000ULL) deciseconds |= ~0xFFFFFFFFFFFFULL;
+        lcHandleSkip(deciseconds);
     });
 
     NSLog(@"[LCGuestPiP] armed on %@ (ended %u, command %u)", base, status, commandStatus);
