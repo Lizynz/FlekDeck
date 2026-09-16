@@ -830,7 +830,14 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     int startToken = 0;
     if(notify_register_dispatch([base stringByAppendingString:@".start"].UTF8String, &startToken,
                                 dispatch_get_main_queue(), ^(int token) {
-        [weakSelf handleGuestPiPStart];
+        // The request carries the id of the CAContext the guest's video is being
+        // rendered into, in the name's 64-bit state. A sample buffer layer holds
+        // no pixels — its video is decoded out of process and reaches the layer
+        // as a hosted context — so this number is the whole of the video, and
+        // the host can host it exactly as the guest does.
+        uint64_t state = 0;
+        notify_get_state(token, &state);
+        [weakSelf handleGuestPiPStartWithPayload:state];
     }) == NOTIFY_STATUS_OK) {
         self.pipStartToken = @(startToken);
     }
@@ -855,7 +862,41 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     }
 }
 
-- (void)handleGuestPiPStart {
+- (void)notifyGuestPiPEnded {
+    // The guest has its video layer out of its own tree for as long as the window
+    // is floating, so it has to be told the moment that is over — including when
+    // PiP was ended by the PiP window's own buttons, which the app never sees.
+    NSString *name = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.ended", self.dataUUID];
+    notify_post(name.UTF8String);
+}
+
+- (void)handleGuestPiPStartWithPayload:(uint64_t)payload {
+    // Packed by LCGuestPiP: the context id in the low 32 bits, then the video's
+    // width and height in the two 16-bit fields above it.
+    self.guestVideoContextId = (uint32_t)payload;
+    self.guestVideoSize = CGSizeMake((payload >> 32) & 0xFFFF, (payload >> 48) & 0xFFFF);
+
+    // Set by the guest before it posted the request, so it is already there. A
+    // field to a quarter of the state: x, y, width, height.
+    uint64_t rect = 0;
+    int rectToken = 0;
+    NSString *rectName = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.videorect", self.dataUUID];
+    if(notify_register_check(rectName.UTF8String, &rectToken) == NOTIFY_STATUS_OK) {
+        notify_get_state(rectToken, &rect);
+        notify_cancel(rectToken);
+    }
+    CGRect videoRect = CGRectMake(rect & 0xFFFF, (rect >> 16) & 0xFFFF,
+                                  (rect >> 32) & 0xFFFF, (rect >> 48) & 0xFFFF);
+    // Nothing usable reported: show the context whole rather than nothing at all.
+    if(videoRect.size.width < 1 || videoRect.size.height < 1) {
+        videoRect = CGRectMake(0, 0, self.guestVideoSize.width, self.guestVideoSize.height);
+    }
+    self.guestVideoRect = videoRect;
+    NSLog(@"[LC] %@ asked to float, video context %u (%dx%d), picture at %d,%d %dx%d",
+          self.bundleId, self.guestVideoContextId,
+          (int)self.guestVideoSize.width, (int)self.guestVideoSize.height,
+          (int)videoRect.origin.x, (int)videoRect.origin.y,
+          (int)videoRect.size.width, (int)videoRect.size.height);
     // Already floating: the app asked twice, or asked for something it is
     // already getting. Starting again would take the window down and put it
     // back up for no visible reason.

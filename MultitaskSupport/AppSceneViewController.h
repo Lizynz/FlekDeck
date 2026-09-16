@@ -63,5 +63,20 @@ API_AVAILABLE(ios(16.0))
 - (void)openURLScheme:(NSString *)urlString;
 - (void)handleStatusBarTapAction:(UIAction *)action;
 - (BOOL)usesHostingControllerAPI;
+/// The CAContext the guest publishes its video into when it asks to float, or 0
+/// if it did not manage to. Hosting this rather than the guest's whole scene is
+/// what puts the video, and nothing around it, in the PiP window.
+@property(nonatomic) uint32_t guestVideoContextId;
+/// The size of the whole published context.
+@property(nonatomic) CGSize guestVideoSize;
+/// Where the picture sits inside that context. What AVKit hands the guest as its
+/// PiP source is a container, with the video somewhere below it at whatever size
+/// the app's layout gave it — so hosting the context whole puts a small picture
+/// in the corner of a large empty window. The host clips to this instead.
+@property(nonatomic) CGRect guestVideoRect;
+/// Tells the guest to take its video layer back. It is out of the app's own tree
+/// for as long as the window is floating, and PiP usually ends by a route the app
+/// hears nothing about.
+- (void)notifyGuestPiPEnded;
 @end
 
