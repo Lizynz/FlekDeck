@@ -1188,6 +1188,30 @@ class AppInfoProvider {
             name: .multitaskHomeBarSettingChanged,
             object: nil
         )
+        // The bar and the bottom swipe share the bottom edge, and only one of them
+        // may own it. Every path that raises or lowers the bar announces itself
+        // here, so this is the one place able to reconcile the two whichever path
+        // made the change — several of them hand the bar over inside an animation's
+        // completion, and one used to not hand it over at all.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(barVisibilityChanged),
+            name: .multitaskBarVisibilityChanged,
+            object: nil
+        )
+    }
+
+    /// Take the bottom swipe zone down when the bar takes the bottom edge back.
+    ///
+    /// Deferred by a turn of the runloop because the bar's own announcement runs
+    /// ahead of the control that replaces it: `hideSwitcherBar` posts before it puts
+    /// the swipe zone up, and a teardown in the same turn would be asking about a
+    /// zone that does not exist yet and would miss the one that follows.
+    @objc private func barVisibilityChanged() {
+        DispatchQueue.main.async {
+            guard self.swipeZone != nil, self.isSwitcherBarHoldingBottomEdge else { return }
+            self.tearDownSwipeZone()
+        }
     }
 
     /// Swap between the floating button and the swipe zone when the setting changes.
@@ -1962,17 +1986,40 @@ class AppInfoProvider {
         return isSwitcherBarOnStage || navShown
     }
 
-    /// Whether the three-button switcher bar is the control currently on stage.
+    /// Whether the three-button switcher bar is the control the dock means to be
+    /// showing. The dock's own record of its intent, and the sharper edge of the
+    /// two below: the bar counts from the moment it is asked for and stops from the
+    /// moment it is dismissed, rather than when either slide finishes.
     ///
-    /// The logical flags rather than the view's alpha, for the same reason as above
-    /// and with a sharper edge: the bar counts as on stage the moment it is asked
-    /// for and stops counting the moment it is dismissed, rather than when either
-    /// slide finishes. That is exactly when the bottom edge changes hands between
-    /// the bar and the swipe zone that stands in for it.
+    /// This is the reading the rotation lock wants, and it must stay this one.
+    /// `hideDock` refreshes that lock before the animation it then starts has taken
+    /// the bar's alpha down, so a reading that consulted the view would still find a
+    /// bar fully drawn on screen at the exact moment going home is meant to re-lock
+    /// to portrait — and the springboard would be left free to turn.
     var isSwitcherBarOnStage: Bool {
         isVisible
             && isSwitcherBarVisible
             && (hostingController?.view.isHidden == false)
+    }
+
+    /// Whether the bar is holding the bottom edge — the question the swipe zone
+    /// answers to, since the two share that edge and only one of them may own it.
+    ///
+    /// The same question asked of the view as well, and either one saying the bar is
+    /// there settles it. The record can be wrong, and the user is looking at the
+    /// bar, not at the record: this is deliberately the pessimistic reading, so that
+    /// whichever of the two is stale the swipe stands down rather than opening the
+    /// switcher from under a bar that is plainly on screen.
+    ///
+    /// Alpha is what separates the two during a slide. Both `hideSwitcherBar` and
+    /// `hideDock` set it to zero as the animation begins — a model value, so it
+    /// reads zero at once — well before `isHidden` is set in the completion, which
+    /// is why a bar on its way out does not go on claiming the edge for the length
+    /// of its exit.
+    var isSwitcherBarHoldingBottomEdge: Bool {
+        if isSwitcherBarOnStage { return true }
+        guard let barView = hostingController?.view else { return false }
+        return barView.window != nil && !barView.isHidden && barView.alpha > 0.1
     }
 
     /// The orientations a foreground guest has been pinned to in its own settings,
@@ -2251,8 +2298,12 @@ class AppInfoProvider {
         // what stands in for the bar while the bar is down. Never both: they share
         // the bottom edge, so a zone up over the bar would open the switcher from
         // underneath its own buttons — and eat the touches meant for them on the way.
-        guard !isSwitcherBarOnStage else { return }
+        guard !isSwitcherBarHoldingBottomEdge else { return }
         let bar = MultitaskSwipeZone()
+        // Answered live, so a zone that somehow outlasts the bar's return is inert
+        // from the moment the bar is back rather than until something takes it down.
+        // Inert with no manager to ask, too: nothing can be opened without one.
+        bar.isInert = { [weak self] in self?.isSwitcherBarHoldingBottomEdge ?? true }
         bar.onActivate = { [weak self] in
             guard let self else { return }
             // Asked again at the moment of the swipe, not only at install time. Every
@@ -2261,7 +2312,7 @@ class AppInfoProvider {
             // the one place the rule cannot be got round, and a refused swipe is
             // silent — the haptic below is the only acknowledgement the gesture has,
             // so it belongs to a swipe that is actually going to do something.
-            guard !self.isSwitcherBarOnStage else { return }
+            guard !self.isSwitcherBarHoldingBottomEdge else { return }
             // Nothing is drawn in the zone, so this tap is all the gesture gets —
             // but it answers to the same setting as the buttons.
             MultitaskDockManager.buttonHaptic()
@@ -4263,6 +4314,20 @@ final class MultitaskSwipeZone: UIView {
     /// Run when a swipe up clears the activation threshold.
     var onActivate: (() -> Void)?
 
+    /// Asked before the zone will take a touch at all: true while the three-button
+    /// bar is the control on screen, where the bottom edge belongs to the bar.
+    ///
+    /// Declining the touch rather than merely ignoring the swipe, because this view
+    /// is hit-testable on purpose — see `hitTestableAlpha` — so a zone that outlived
+    /// the bar coming back would go on swallowing touches along the bar's own chin
+    /// even once it had stopped acting on them.
+    var isInert: (() -> Bool)?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if isInert?() == true { return nil }
+        return super.hitTest(point, with: event)
+    }
+
     // MARK: Geometry
 
     /// Nothing is drawn in the zone, so it is sized for a finger rather than for the
@@ -4416,10 +4481,10 @@ struct SwitcherBarContentView: View {
     private var activeBarContent: some View {
         HStack(spacing: MultitaskDockManager.Constants.barSpacing) {
             // Left: Hide button
-            Button(action: {
+            BarControlButton {
                 MultitaskDockManager.buttonHaptic()
                 dockManager.hideSwitcherBar()
-            }) {
+            } label: {
                 Image(systemName: "chevron.down")
                     .foregroundColor(.white)
                     .font(.system(size: 14, weight: .semibold))
@@ -4427,28 +4492,28 @@ struct SwitcherBarContentView: View {
                            height: MultitaskDockManager.Constants.barButtonSize)
                     .stableBarGlass(capsule: false)
             }
-            .buttonStyle(BarControlButtonStyle())
-            
+            .accessibilityLabel("Hide Switcher Bar")
+
             // Middle: App switcher button
-            Button(action: {
+            BarControlButton {
                 MultitaskDockManager.buttonHaptic()
                 if dockManager.isAppSwitcherOpen {
                     dockManager.dismissAppSwitcher()
                 } else {
                     dockManager.showAppSwitcher()
                 }
-            }) {
+            } label: {
                 FrontmostAppIconLabel()
                     .stableBarGlass(capsule: true)
             }
-            .buttonStyle(BarControlButtonStyle())
-            
+            .accessibilityLabel("App Switcher")
+
             // Right: Home button
-            Button(action: {
+            BarControlButton {
                 MultitaskDockManager.buttonHaptic()
                 homeBounce += 1
                 dockManager.goHome()
-            }) {
+            } label: {
                 Image(systemName: "app")
                     .foregroundColor(.white)
                     .font(.system(size: 16, weight: .medium))
@@ -4457,7 +4522,7 @@ struct SwitcherBarContentView: View {
                            height: MultitaskDockManager.Constants.barButtonSize)
                     .stableBarGlass(capsule: false)
             }
-            .buttonStyle(BarControlButtonStyle())
+            .accessibilityLabel("Home")
         }
     }
     
@@ -6321,6 +6386,52 @@ struct ChinControlEntrance: ViewModifier {
 /// label — glass applied to the button outside the style would sit still while
 /// the glyph shrank inside it.
 @available(iOS 16.0, *)
+/// A bar control that answers a tap and lets a swipe go by.
+///
+/// Deliberately not a `Button`. The three controls sit in the strip the bottom
+/// swipe zone occupies when the bar is down, and the middle one — the switcher —
+/// is directly under where that swipe starts: with a ~59pt flat region and 44pt
+/// controls centred in it, its lower edge is some seven points off the bottom of
+/// the screen, on the home indicator itself. A pull up from the bezel therefore
+/// begins on that control and, having travelled the sixteen-odd points the swipe
+/// asks for, is still well inside its 44pt height when the finger lifts — which a
+/// button reads as a tap, and the switcher opens. That is the bottom swipe
+/// apparently still working with the bar up, and only sometimes, because whether
+/// it happens depends on exactly where the finger landed and how far it went.
+///
+/// `onPressGesture` is the trade the switcher cards already make: the touch is
+/// given up the moment it travels far enough to be a swipe rather than a press. A
+/// tap behaves as it always did — the press look below is `BarControlButtonStyle`'s,
+/// which the switcher overlay's own controls still use.
+@available(iOS 16.0, *)
+private struct BarControlButton<Label: View>: View {
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+
+    @State private var isPressed = false
+
+    var body: some View {
+        label()
+            .scaleEffect(isPressed ? 0.92 : 1)
+            .opacity(isPressed ? 0.75 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isPressed)
+            .contentShape(Rectangle())
+            .onPressGesture(onPress: { isPressed = true },
+                            onCancel: { isPressed = false },
+                            onRelease: { _ in
+                                isPressed = false
+                                action()
+                            })
+            // A plain view carries none of what a button gives VoiceOver, so what
+            // it needs to stay one control is put back by hand — including being a
+            // single element, which is what lets the caller's label land on it
+            // rather than on the icon and name inside the middle one.
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { action() }
+    }
+}
+
 struct BarControlButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
