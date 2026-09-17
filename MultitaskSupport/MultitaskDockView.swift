@@ -192,8 +192,12 @@ class AppInfoProvider {
     /// places — launch, minimize, restore, the switcher, Close All — and a route
     /// that forgot to tell the PiP manager would leave it armed on a window that
     /// is no longer there.
-    @Published var frontmostAppUUID: String? { didSet { updatePiPArming() } }
-    @Published var isHomeState: Bool = false { didSet { updatePiPArming() } }
+    @Published var frontmostAppUUID: String? {
+        didSet { floatWindowLeavingStage(oldValue); updatePiPArming() }
+    }
+    @Published var isHomeState: Bool = false {
+        didSet { if isHomeState { floatWindowLeavingStage(frontmostAppUUID) }; updatePiPArming() }
+    }
     /// Where each running app's icon sits in the home dock, in window
     /// coordinates, keyed by its home-screen item id. Written by the icons
     /// themselves as they lay out, and read by the minimize animation when a
@@ -2847,6 +2851,24 @@ class AppInfoProvider {
             return
         }
         pipManager.arm(forVC: appSceneVC)
+    }
+
+    /// Floats a window whose guest has a video as it leaves the stage — another
+    /// window brought forward, the switcher opened, this one minimized.
+    ///
+    /// The same thing happens when the user leaves FlekDeck altogether, but this
+    /// is the easier half of it: FlekDeck is still in front, so the float can be
+    /// started outright instead of waiting on AVKit to start it on backgrounding.
+    ///
+    /// Does nothing for a window with no video, and nothing when something is
+    /// already floating.
+    private func floatWindowLeavingStage(_ uuid: String?) {
+        guard let uuid, uuid != frontmostAppUUID || isHomeState else { return }
+        guard let pipManager = PiPManager.shared, !pipManager.isPiP else { return }
+        guard let decoratedVC = apps.first(where: { $0.appUUID == uuid })?.view?._viewDelegate()
+                as? DecoratedAppSceneViewController,
+              let appSceneVC = decoratedVC.appSceneVC, appSceneVC.guestHasVideo else { return }
+        appSceneVC.requestGuestFloat()
     }
 
     /// Re-checks which window should be armed, for a caller that changed

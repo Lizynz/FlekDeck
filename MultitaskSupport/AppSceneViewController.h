@@ -82,6 +82,9 @@ API_AVAILABLE(ios(16.0))
 /// told its PiP started. Told any earlier, the app replaces its video with a
 /// placeholder for a window that may never appear.
 - (void)notifyGuestPiPStarted;
+/// Asks the guest to publish its video and float, for a window that is leaving
+/// the stage while LiveContainer itself stays in front.
+- (void)requestGuestFloat;
 /// Whether the guest has a video it could float, and how big. Known well before
 /// anything floats, because AVKit only starts a controller that already existed
 /// when the app backgrounded — so the armed controller has to be the

@@ -83,6 +83,7 @@ static NSString *gSkipName;
 static NSString *gVideoRectName;
 static NSString *gVideoReadyName;
 static NSString *gStartedName;
+static NSString *gFloatName;
 /// The app's own PiP controller and the playback delegate it gave AVKit. Every
 /// command the host's PiP window sends is answered by handing it to these, so the
 /// app drives its own player and nothing here has to understand playback.
@@ -1031,6 +1032,7 @@ void LCGuestPiPInit(NSString *dataUUID) {
     gVideoRectName = [base stringByAppendingString:@".videorect"];
     gVideoReadyName = [base stringByAppendingString:@".videoready"];
     gStartedName = [base stringByAppendingString:@".started"];
+    gFloatName = [base stringByAppendingString:@".float"];
 
     lcInstallHooks();
     _dyld_register_func_for_add_image(lcPiPImageAdded);
@@ -1070,6 +1072,16 @@ void LCGuestPiPInit(NSString *dataUUID) {
     notify_register_dispatch(gStartedName.UTF8String, &startedToken,
                              dispatch_get_main_queue(), ^(int token) {
         lcTellAppFloating();
+    });
+
+    // The host asking, which it does when this window stops being the one on
+    // stage — another window brought forward, the switcher opened, this one
+    // minimized. From the app's point of view that is the same event as the user
+    // leaving FlekDeck: its video is about to stop being visible either way.
+    static int floatToken;
+    notify_register_dispatch(gFloatName.UTF8String, &floatToken,
+                             dispatch_get_main_queue(), ^(int token) {
+        lcFloatNow("left the stage");
     });
 
     // Leaving FlekDeck is the other way in. The app's own automatic PiP is pinned

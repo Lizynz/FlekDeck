@@ -894,6 +894,12 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     notify_post(name.UTF8String);
 }
 
+- (void)requestGuestFloat {
+    if(!self.guestHasVideo) return;
+    NSString *name = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.float", self.dataUUID];
+    notify_post(name.UTF8String);
+}
+
 - (void)notifyGuestPiPEnded {
     // The guest has its video layer out of its own tree for as long as the window
     // is floating, so it has to be told the moment that is over — including when
