@@ -509,6 +509,15 @@ static PiPManager* sharedInstance = nil;
     // tear it down.
     if(self.isPiP || self.isStartingPiP) return;
     if(self.pipController && self.displayingVC == vc) return;
+    // Only a window with a video to float is armed. Arming was once unconditional,
+    // which meant leaving LiveContainer floated whatever happened to be in front —
+    // Settings, a messaging app, anything — as a shrunken copy of its whole window,
+    // which nobody asked for. A guest says it has a video by reporting its shape,
+    // and only then is there something worth floating without being asked.
+    //
+    // Floating a window on purpose is untouched: the switcher card's own PiP
+    // builds its controller at the moment it is chosen.
+    if(!vc.guestHasVideo) return;
     // On stage, but its guest has not presented a scene yet — a window is brought
     // to the front the moment it is created, which is well before there is
     // anything in it to float. Binding a controller to that would capture a
