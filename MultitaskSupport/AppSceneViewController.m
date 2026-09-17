@@ -909,6 +909,20 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
 }
 
 - (void)handleGuestPiPStartWithPayload:(uint64_t)payload {
+    if((uint32_t)payload == 0) {
+        // The guest asked to float but could not find its video, so the whole
+        // window is floated instead — the old behaviour, and better than a PiP
+        // button that does nothing. Its claim to have a video is dropped too:
+        // whatever it reported the shape of, it cannot publish it.
+        NSLog(@"[LC] %@ asked to float but has no video to publish; floating the window", self.bundleId);
+        self.guestHasVideo = NO;
+        self.guestVideoContextId = 0;
+        if(PiPManager.hasShared && [PiPManager.shared isPiPWithVC:self]) return;
+        [PiPManager.shared disarmIfInactiveForVC:self];
+        [PiPManager.shared startPiPWithVC:self];
+        return;
+    }
+
     // Packed by LCGuestPiP: the context id in the low 32 bits, then the video's
     // width and height in the two 16-bit fields above it.
     self.guestVideoContextId = (uint32_t)payload;

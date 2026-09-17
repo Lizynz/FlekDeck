@@ -321,7 +321,7 @@ static void lcStopPublishingPlaybackState(void);
 static void lcTellAppNotFloating(void);
 static void lcTellAppFloating(void);
 static void lcReportVideoReady(id controller);
-static void lcFloatNow(const char *why);
+static void lcFloatNow(const char *why, BOOL mayFloatWholeWindow);
 static void lcStartWatchingVideoSize(void);
 static void lcUnpublishVideoContext(void);
 static BOOL gAppBelievesItIsFloating;
@@ -853,12 +853,27 @@ static void lcTellAppNotFloating(void) {
 /// then fails to appear the user is left with neither. That is exactly what
 /// happened when this was told up front: no floating window, and nothing behind
 /// it either.
-static void lcFloatNow(const char *why) {
+static void lcFloatNow(const char *why, BOOL mayFloatWholeWindow) {
     if(gAppBelievesItIsFloating || gBorrowedLayer || !gAppController) return;
     uint64_t payload = lcVideoPayload(gAppController);
     NSLog(@"[LCGuestPiP] floating (%s): context %u, %ux%u", why,
           (uint32_t)payload, (uint32_t)((payload >> 32) & 0xFFFF), (uint32_t)((payload >> 48) & 0xFFFF));
-    if(payload == 0) return;
+    if(payload == 0) {
+        // No video could be found. The layer search knows the shape CoreMedia's
+        // own players have, and an app that nests its video differently falls
+        // through it — in which case the app's PiP button would otherwise do
+        // nothing whatsoever, which is worse than the black window it produced
+        // before any of this existed. The host floats the whole window instead,
+        // which works for anything.
+        //
+        // Only when the user asked. Leaving FlekDeck, or a window leaving the
+        // stage, must not start floating whole windows on its own: that is the
+        // behaviour that made every app float whether it had a video or not.
+        if(!mayFloatWholeWindow) return;
+        NSLog(@"[LCGuestPiP] no video found; asking for the whole window instead");
+        lcRequestFloat(0);
+        return;
+    }
     gIntendedPlaying = YES;
     lcStartPublishingPlaybackState();
     lcRequestFloat(payload);
@@ -878,7 +893,7 @@ static void (*orig_startPictureInPicture)(id, SEL);
 static void lc_startPictureInPicture(id self, SEL _cmd) {
     // Not forwarded. Calling through is what produces the empty window.
     gAppController = self;
-    lcFloatNow("button");
+    lcFloatNow("button", YES);
 }
 
 /// The app's own answer is no — it never started one — but as far as it is
@@ -1081,7 +1096,7 @@ void LCGuestPiPInit(NSString *dataUUID) {
     static int floatToken;
     notify_register_dispatch(gFloatName.UTF8String, &floatToken,
                              dispatch_get_main_queue(), ^(int token) {
-        lcFloatNow("left the stage");
+        lcFloatNow("left the stage", NO);
     });
 
     // Leaving FlekDeck is the other way in. The app's own automatic PiP is pinned
@@ -1092,7 +1107,7 @@ void LCGuestPiPInit(NSString *dataUUID) {
     [NSNotificationCenter.defaultCenter addObserverForName:@"UIApplicationWillResignActiveNotification"
                                                     object:nil queue:NSOperationQueue.mainQueue
                                                 usingBlock:^(NSNotification *note) {
-        lcFloatNow("leaving FlekDeck");
+        lcFloatNow("leaving FlekDeck", NO);
     }];
 
     NSLog(@"[LCGuestPiP] armed on %@ (ended %u, command %u)", base, status, commandStatus);

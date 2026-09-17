@@ -1718,6 +1718,15 @@ class AppInfoProvider {
             }
 
             self.isSwitcherBarVisible = true
+            // Whatever was standing in for the bar goes as the bar arrives — the
+            // other end of the exchange `showSwitcherBar` makes, for the path that
+            // brings the bar back by putting the whole dock up rather than by
+            // sliding the bar in.
+            self.navAssistButton?.removeFromSuperview()
+            self.navAssistButton = nil
+            self.isNavAssistStashed = false
+            self.navAssistChevron = nil
+            self.tearDownSwipeZone()
             self.refreshOrientationLock()
 
             // Reserve space for the bar on its current edge for internal pages
@@ -1949,11 +1958,21 @@ class AppInfoProvider {
     /// Uses the logical visibility flags (not view alpha) so the value is
     /// correct immediately, before show/hide animations settle.
     var isAnyControlVisible: Bool {
-        let barShown = isVisible
+        let navShown = navAssistButton != nil || swipeZone != nil
+        return isSwitcherBarOnStage || navShown
+    }
+
+    /// Whether the three-button switcher bar is the control currently on stage.
+    ///
+    /// The logical flags rather than the view's alpha, for the same reason as above
+    /// and with a sharper edge: the bar counts as on stage the moment it is asked
+    /// for and stops counting the moment it is dismissed, rather than when either
+    /// slide finishes. That is exactly when the bottom edge changes hands between
+    /// the bar and the swipe zone that stands in for it.
+    var isSwitcherBarOnStage: Bool {
+        isVisible
             && isSwitcherBarVisible
             && (hostingController?.view.isHidden == false)
-        let navShown = navAssistButton != nil || swipeZone != nil
-        return barShown || navShown
     }
 
     /// The orientations a foreground guest has been pinned to in its own settings,
@@ -2228,9 +2247,25 @@ class AppInfoProvider {
     private func installSwipeZone(in host: UIView, animated: Bool) {
         tearDownSwipeZone()
         guard isSwipeZoneEnabled else { return }
+        // The bar and the swipe are two ways to the one switcher, and the swipe is
+        // what stands in for the bar while the bar is down. Never both: they share
+        // the bottom edge, so a zone up over the bar would open the switcher from
+        // underneath its own buttons — and eat the touches meant for them on the way.
+        guard !isSwitcherBarOnStage else { return }
         let bar = MultitaskSwipeZone()
         bar.onActivate = { [weak self] in
-            self?.showAppSwitcher()
+            guard let self else { return }
+            // Asked again at the moment of the swipe, not only at install time. Every
+            // path that brings the bar back takes the zone down with it, but they are
+            // several and some of them finish in an animation's completion; this is
+            // the one place the rule cannot be got round, and a refused swipe is
+            // silent — the haptic below is the only acknowledgement the gesture has,
+            // so it belongs to a swipe that is actually going to do something.
+            guard !self.isSwitcherBarOnStage else { return }
+            // Nothing is drawn in the zone, so this tap is all the gesture gets —
+            // but it answers to the same setting as the buttons.
+            MultitaskDockManager.buttonHaptic()
+            self.showAppSwitcher()
         }
         host.addSubview(bar)
         swipeZone = bar
@@ -4313,9 +4348,8 @@ final class MultitaskSwipeZone: UIView {
         let activated = -translation >= Self.activationDistance
             || velocity <= -Self.activationVelocity
         guard activated else { return }
-        // Nothing is drawn here, so this tap is the only acknowledgement the
-        // gesture gets — but it answers to the same setting as the buttons.
-        MultitaskDockManager.buttonHaptic()
+        // Whether the swipe does anything is not the zone's to know — the bar may
+        // have come back over it — so the feedback for it is the handler's too.
         onActivate?()
     }
 }
