@@ -13,8 +13,9 @@ import PhotosUI
 struct FlekPersonalizationView: View {
     @AppStorage("LCBetaBannerOverride", store: LCUtils.appGroupUserDefault) private var betaBannerOverride: Int = 0
     // 0 = auto (show on beta), 1 = force on, 2 = force off
-    /// Set by tapping the title 100 times: offers the beta warning toggle on a
-    /// device that isn't on a beta, where it is otherwise hidden.
+    /// Set when a run of title taps turns the beta warning on: keeps its toggle
+    /// on offer on a device that isn't on a beta, so switching the warning off
+    /// again does not take away the switch that put it there.
     @AppStorage("LCBetaBannerToggleRevealed", store: LCUtils.appGroupUserDefault) private var betaToggleRevealed = false
 
     @AppStorage(FlekDeckKeys.wallpaperName, store: LCUtils.appGroupUserDefault)
@@ -86,7 +87,7 @@ struct FlekPersonalizationView: View {
                 }
 
                 // MARK: iOS Beta
-                if BetaOverlayManager.isBetaiOS || betaToggleRevealed {
+                if showsBetaToggle {
                     VStack(alignment: .leading, spacing: 10) {
                         sectionHeader("lc.flek.iosBeta".loc)
                         Toggle("lc.flek.showBetaWarning".loc, isOn: betaWarningEnabled)
@@ -121,6 +122,16 @@ struct FlekPersonalizationView: View {
 
     // MARK: iOS Beta Warning
 
+    /// Whether the beta warning's toggle is on offer: on a beta, where the warning
+    /// is the default, and anywhere the warning is currently up — a device with it
+    /// forced on has to be able to turn it off again. Sticky once a run of title
+    /// taps has turned it on, so the switch does not vanish the moment it is used.
+    private var showsBetaToggle: Bool {
+        BetaOverlayManager.isBetaiOS
+            || BetaOverlayManager.isEnabled(override: betaBannerOverride)
+            || betaToggleRevealed
+    }
+
     /// The beta warning as one switch, over whichever of auto, on and off is
     /// stored behind it.
     private var betaWarningEnabled: Binding<Bool> {
@@ -132,11 +143,12 @@ struct FlekPersonalizationView: View {
 
     /// Counts a run of quick taps on the title, the hidden controls for the beta
     /// warning. One running count rather than two multi-tap gestures, because a
-    /// 10-tap gesture would fire ten times on the way to 100. The 10th tap turns
-    /// the warning off and hides the toggle again on a device that isn't on a
-    /// beta; the 100th turns the warning on and shows the toggle even there. A run
-    /// that goes on to 100 passes 10 first, so the warning goes off briefly before
-    /// it comes on.
+    /// 10-tap gesture would fire ten times on the way to 100. The 10th tap flips
+    /// the warning, which is the only way to turn it on where the toggle is still
+    /// hidden; the 100th turns it on outright. Either way, turning it on puts the
+    /// toggle on offer for good, even on a device that isn't on a beta. A run that
+    /// goes on to 100 passes 10 first, so the warning flips there before it is
+    /// turned on.
     private func countHeaderTap() {
         let run = headerTapRun
         let now = Date()
@@ -145,8 +157,9 @@ struct FlekPersonalizationView: View {
 
         switch run.count {
         case 10:
-            betaBannerOverride = BetaOverlayManager.override(enabled: false)
-            betaToggleRevealed = false
+            let enabled = BetaOverlayManager.isEnabled(override: betaBannerOverride)
+            betaBannerOverride = BetaOverlayManager.override(enabled: !enabled)
+            if !enabled { betaToggleRevealed = true }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         case 100:
             betaBannerOverride = BetaOverlayManager.override(enabled: true)
