@@ -542,17 +542,27 @@ struct LCSettingsView: View {
                     NavigationLink { LCTweaksView() } label: {
                         categoryRow("Tweaks", "wrench.and.screwdriver.fill", .orange, iconSize: 17)
                     }
+                    NavigationLink { FlekAboutView() } label: {
+                        categoryRow("lc.flek.cat.about".loc, "info.circle", .gray, iconSize: 20)
+                    }
                 }
                 Section {
                     linkRow("FlekIconFlekStore", "FlekSt0re.com", action: openFlekstore)
                     linkRow("GitHub", "GitHub - LiveContainer", action: openGitHub)
+                    linkRow("GitHub", "lc.flek.sourceCode".loc, action: openFlekDeckRepo)
                     linkRow("Twitter", "khanhduytran0", action: openTwitter)
                     linkRow("GitHub", "GitHub - Huge_Black", action: openGitHub2)
                 } footer: {
+                    // Centred so it closes the page with the version and build lines
+                    // below it, rather than trailing off to one side of them. A Text
+                    // sizes to its content, so it takes the full width first and
+                    // centres what it wraps onto a second line.
                     Text("lc.settings.warning".loc)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                 }
                 
-                VStack(alignment: .leading, spacing: 2){
+                VStack(spacing: 2){
                     Text(LCUtils.getVersionInfo())
                         .foregroundStyle(.gray)
                         // The branch and hash make this long enough to wrap in the
@@ -560,7 +570,10 @@ struct LCSettingsView: View {
                         // and shrinking only once that is not enough either.
                         .lineLimit(2)
                         .minimumScaleFactor(0.5)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .multilineTextAlignment(.center)
+                        // Filling the width gives the five-tap developer-mode gesture
+                        // the whole line to land on, not just the glyphs.
+                        .frame(maxWidth: .infinity)
                         .contentShape(Rectangle())
                         .onTapGesture(count: 5) {
                             sharedModel.developerMode = true
@@ -576,9 +589,6 @@ struct LCSettingsView: View {
                             .contentShape(Rectangle())
                             .onTapGesture(perform: openFlekstore)
                     }
-                    // Centred on its own, against a version line that fills the width
-                    // to sit leading. The stack's own alignment cannot do both.
-                    .frame(maxWidth: .infinity)
                     // The size this line has always been. Only the version below the
                     // footer was meant to match it, and a font set here is nearer the
                     // text than the one on the stack, so it is the one that lands.
@@ -588,13 +598,12 @@ struct LCSettingsView: View {
                 .font(.footnote)
                 // Line up with the footer above rather than with the cards: a row is
                 // kept 20pt clear of each window edge, and a section footer a further
-                // 20pt inside that. Leading, for the same reason — a matching margin
-                // reads as one only if both start at the same edge. The padding sits
-                // within the frame so the background still covers the whole row —
-                // inset the row itself and the cell's own card colour shows along
-                // both edges.
+                // 20pt inside that, so a long version string wraps where the warning
+                // does. The padding sits within the frame so the background still
+                // covers the whole row — inset the row itself and the cell's own card
+                // colour shows along both edges.
                 .padding(.horizontal, 20)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(UIColor.systemGroupedBackground))
                 .listRowInsets(EdgeInsets())
 
@@ -1140,6 +1149,10 @@ struct LCSettingsView: View {
 
     func openGitHub() {
         UIApplication.shared.open(URL(string: "https://github.com/LiveContainer/LiveContainer")!)
+    }
+
+    func openFlekDeckRepo() {
+        UIApplication.shared.open(URL(string: "https://github.com/flekstore/FlekDeck")!)
     }
     
     func openGitHub2() {

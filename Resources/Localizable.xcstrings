@@ -15592,6 +15592,138 @@
         }
       }
     },
+    "lc.flek.about.body" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "FlekDeck is developed and maintained by FlekStore. It is built on LiveContainer, the open-source app container that makes running other apps inside one app possible."
+          }
+        }
+      }
+    },
+    "lc.flek.about.build" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Build"
+          }
+        }
+      }
+    },
+    "lc.flek.about.fullLicense" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Full license text"
+          }
+        }
+      }
+    },
+    "lc.flek.about.license" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "FlekDeck is distributed under the GNU Affero General Public License, version 3 (AGPL-3.0)."
+          }
+        }
+      }
+    },
+    "lc.flek.about.released" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Released"
+          }
+        }
+      }
+    },
+    "lc.flek.about.rights" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The license gives you the right to use, study and modify FlekDeck, and to pass it on to other people. If you distribute a modified version — or let others use one over a network — you must offer them the complete corresponding source code of that version under the AGPL-3.0 as well, and keep the copyright and license notices in place."
+          }
+        }
+      }
+    },
+    "lc.flek.about.section.about" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "About"
+          }
+        }
+      }
+    },
+    "lc.flek.about.section.license" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "License"
+          }
+        }
+      }
+    },
+    "lc.flek.about.section.rights" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modifying and sharing"
+          }
+        }
+      }
+    },
+    "lc.flek.about.section.warranty" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No warranty"
+          }
+        }
+      }
+    },
+    "lc.flek.about.version" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version"
+          }
+        }
+      }
+    },
+    "lc.flek.about.warranty" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "FlekDeck is provided as is, without warranty of any kind, express or implied, including the implied warranties of merchantability and fitness for a particular purpose. You run it, and the apps you install into it, at your own risk: to the extent the law allows, neither FlekStore nor the LiveContainer authors are liable for data loss, account problems or any other damage arising from its use. Sections 15 and 16 of the AGPL-3.0 set this out in full."
+          }
+        }
+      }
+    },
     "lc.flek.addSource" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -15764,6 +15896,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Cancel installation"
+          }
+        }
+      }
+    },
+    "lc.flek.cat.about" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "About & License"
           }
         }
       }
@@ -16380,6 +16523,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Show Beta Warning"
+          }
+        }
+      }
+    },
+    "lc.flek.sourceCode" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "FlekDeck source code"
           }
         }
       }
