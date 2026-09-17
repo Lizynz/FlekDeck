@@ -18,6 +18,7 @@ void IDFVHookInit(NSUUID* uuid);
 void LCHostIdentityInit(void);
 void LCAudioMuteInit(NSString* dataUUID);
 void LCGuestPiPInit(NSString* dataUUID);
+void LCGuestCaptureInit(NSString* dataUUID);
 
 @interface NSBundle(LiveContainer)
 - (instancetype)initWithPathForMainBundle:(NSString *)path;

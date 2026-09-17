@@ -9,6 +9,7 @@
 #import "LiveContainerSwiftUI-Swift.h"
 #import "../LiveContainerSwiftUI/Utilities/LCUtils.h"
 #import "PiPManager.h"
+#import "LCGuestCaptureNotice.h"
 #import "Localization.h"
 #import "LCSharedUtils.h"
 #import "utils.h"
@@ -293,6 +294,8 @@ static void LCUnstageAppFromAppGroup(NSString *bundleId, NSString *dataUUID, BOO
 @property(nonatomic) NSNumber *pipStartToken;
 @property(nonatomic) NSNumber *pipStopToken;
 @property(nonatomic) NSNumber *pipReadyToken;
+/// Raises the Single Mode sheet when the guest is refused the microphone.
+@property(nonatomic) LCGuestCaptureNotice *captureNotice;
 @end
 
 /// The device orientation to hand a guest, derived from the orientation UIKit has
@@ -613,6 +616,7 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     [self.view.window.windowScene _registerSettingsDiffActionArray:@[self] forKey:self.sceneID];
 
     [self beginObservingGuestPiPRequests];
+    [self beginObservingGuestCaptureRefusals];
 
     if([self.delegate respondsToSelector:@selector(appSceneVCDidPresentScene:)]) {
         [self.delegate appSceneVCDidPresentScene:self];
@@ -765,6 +769,8 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
 
     [_audio invalidate];
     [self endObservingGuestPiPRequests];
+    [_captureNotice invalidate];
+    _captureNotice = nil;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         // Bring the guest's container back and release the staged bundle. This
@@ -860,6 +866,24 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     }) == NOTIFY_STATUS_OK) {
         self.pipStopToken = @(stopToken);
     }
+}
+
+/// Listens for the guest being refused the microphone.
+///
+/// iOS does not let an app extension record, and every multitask guest is one,
+/// so a call placed in a window like this is silent in both directions — the
+/// Voice Processing unit a VoIP app drives does capture and playback together,
+/// and the refusal stops the whole unit rather than just its microphone half.
+/// Nothing surfaces: the call connects, the timer runs, and neither side is
+/// heard. LCGuestCapture watches for the refusal inside the guest and posts it
+/// here, and the window raises a sheet explaining that the microphone needs
+/// Single Mode, and how to get there.
+///
+/// Registered once the guest is running, which is the earliest anything can fail.
+- (void)beginObservingGuestCaptureRefusals {
+    if(self.captureNotice) return;
+    self.captureNotice = [[LCGuestCaptureNotice alloc] initWithDataUUID:self.dataUUID];
+    self.captureNotice.hostViewController = self;
 }
 
 - (void)endObservingGuestPiPRequests {

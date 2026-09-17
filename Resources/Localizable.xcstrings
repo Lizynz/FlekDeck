@@ -19619,6 +19619,39 @@
         }
       }
     },
+    "lc.multitask.micSingleMode.desc" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The microphone isn't supported in Parallel mode. To use calls, voice messages and anything else that needs the mic, run this app in Single Mode."
+          }
+        }
+      }
+    },
+    "lc.multitask.micSingleMode.how" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Long-press the app on the FlekDeck home screen, then choose Run Single."
+          }
+        }
+      }
+    },
+    "lc.multitask.micSingleMode.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Microphone Needs Single Mode"
+          }
+        }
+      }
+    },
     "lc.multitask.mute" : {
       "extractionState" : "manual",
       "localizations" : {

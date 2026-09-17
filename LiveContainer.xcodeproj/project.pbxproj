@@ -282,6 +282,8 @@
 				AppSceneViewController.m,
 				DecoratedAppSceneViewController.h,
 				DecoratedAppSceneViewController.m,
+				LCGuestCaptureNotice.h,
+				LCGuestCaptureNotice.m,
 				LCGuestVolume.h,
 				LCGuestVolume.m,
 				LCRotationLock.swift,
