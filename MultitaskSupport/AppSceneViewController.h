@@ -78,5 +78,14 @@ API_AVAILABLE(ios(16.0))
 /// for as long as the window is floating, and PiP usually ends by a route the app
 /// hears nothing about.
 - (void)notifyGuestPiPEnded;
+/// Tells the guest the float has actually begun, which is when the app may be
+/// told its PiP started. Told any earlier, the app replaces its video with a
+/// placeholder for a window that may never appear.
+- (void)notifyGuestPiPStarted;
+/// Whether the guest has a video it could float, and how big. Known well before
+/// anything floats, because AVKit only starts a controller that already existed
+/// when the app backgrounded — so the armed controller has to be the
+/// video-shaped one from the moment the guest has a video at all.
+@property(nonatomic) BOOL guestHasVideo;
 @end
 

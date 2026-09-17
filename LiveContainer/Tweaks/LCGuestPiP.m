@@ -81,6 +81,8 @@ static NSString *gStateName;
 static NSString *gPlayName;
 static NSString *gSkipName;
 static NSString *gVideoRectName;
+static NSString *gVideoReadyName;
+static NSString *gStartedName;
 /// The app's own PiP controller and the playback delegate it gave AVKit. Every
 /// command the host's PiP window sends is answered by handing it to these, so the
 /// app drives its own player and nothing here has to understand playback.
@@ -316,6 +318,11 @@ static uint32_t lcPublishVideoContext(id sourceLayer, CGSize *sizeOut) {
 
 static void lcStopPublishingPlaybackState(void);
 static void lcTellAppNotFloating(void);
+static void lcTellAppFloating(void);
+static void lcReportVideoReady(id controller);
+static void lcFloatNow(const char *why);
+static void lcStartWatchingVideoSize(void);
+static void lcUnpublishVideoContext(void);
 static BOOL gAppBelievesItIsFloating;
 /// Whether the user wants playback running, which only the PiP window's play and
 /// pause buttons change. Deliberately not the app's own momentary state: a player
@@ -727,6 +734,70 @@ static void lcHandleSkip(int64_t deciseconds) {
     lcPublishPlaybackState();
 }
 
+/// Tells the host this guest has a video it could float, and what shape it is.
+///
+/// A measurement and nothing more. Publishing the video moves the app's layer out
+/// of its own window, which must not happen while the user is still watching it
+/// there — but the host has to know the shape well in advance, because AVKit can
+/// only start a controller that already existed when the app backgrounded. So the
+/// controller is armed now and the context id follows at the last moment.
+static int gVideoReadyToken = NOTIFY_TOKEN_INVALID;
+static void lcReportVideoReady(id controller) {
+    if(!gVideoReadyName || !controller) return;
+    // Never while the video is published: the picture layer is out of the app's
+    // tree for the duration, so the search below finds nothing and the fallback
+    // measures the container instead — a square, where the video is 16:9. The
+    // host would resize the armed window to that, and a resize landing just
+    // before the user leaves is a window of the wrong shape or none at all.
+    if(gBorrowedLayer) return;
+    @try {
+        id contentSource = [controller valueForKey:@"contentSource"];
+        id sourceLayer = contentSource ? [contentSource valueForKey:@"sampleBufferDisplayLayer"] : nil;
+        if(!sourceLayer) return;
+        // Only a real picture layer is worth reporting. Falling back to the outer
+        // layer reports the shape of the app's container, which is not the shape
+        // of anything anyone wants to look at.
+        id videoLayer = lcFindVideoLayer(sourceLayer);
+        if(!videoLayer) return;
+        CGRect (*getBounds)(id, SEL) = (CGRect (*)(id, SEL))objc_msgSend;
+        CGSize size = getBounds(videoLayer, @selector(bounds)).size;
+        if(size.width < 1 || size.height < 1) return;
+
+        static CGSize lastReported = {0, 0};
+        if(CGSizeEqualToSize(size, lastReported)) return;
+        lastReported = size;
+
+        if(gVideoReadyToken == NOTIFY_TOKEN_INVALID) {
+            int token = 0;
+            if(notify_register_check(gVideoReadyName.UTF8String, &token) != NOTIFY_STATUS_OK) return;
+            gVideoReadyToken = token;
+        }
+        uint64_t w = (uint64_t)MIN(MAX((int)size.width, 0), 0xFFFF);
+        uint64_t h = (uint64_t)MIN(MAX((int)size.height, 0), 0xFFFF);
+        notify_set_state(gVideoReadyToken, w | (h << 16));
+        notify_post(gVideoReadyName.UTF8String);
+        NSLog(@"[LCGuestPiP] video ready, %dx%d", (int)size.width, (int)size.height);
+    } @catch(NSException *exception) {
+    }
+}
+
+/// Keeps the host's idea of the video's shape current.
+///
+/// The measurement is taken once when the app first asks for automatic PiP, which
+/// can be long before the user leaves and before the player has settled on a
+/// size — and the host builds the window it keeps armed from that number, so a
+/// stale one gives a window the wrong shape with the video filling only part of
+/// it. Re-measured while there is a video to measure; the report itself is
+/// skipped unless the answer has changed, so this costs a bounds read a second.
+static NSTimer *gSizeTimer;
+static void lcStartWatchingVideoSize(void) {
+    lcReportVideoReady(gAppController);
+    if(gSizeTimer) return;
+    gSizeTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
+        lcReportVideoReady(gAppController);
+    }];
+}
+
 #pragma mark - Telling the app it is floating
 
 /// Whether the app has been told its PiP is running. Declared above.
@@ -772,19 +843,41 @@ static void lcTellAppNotFloating(void) {
 
 #pragma mark - Hooks
 
+/// Publishes the video and asks the host to float it. The one way in, whether the
+/// app's own button asked or the user simply left FlekDeck.
+///
+/// The app is not told anything here. It is told once the float has actually
+/// begun, when the host says so — an app told its PiP started puts up a "playing
+/// in picture in picture" placeholder in place of its video, and if the float
+/// then fails to appear the user is left with neither. That is exactly what
+/// happened when this was told up front: no floating window, and nothing behind
+/// it either.
+static void lcFloatNow(const char *why) {
+    if(gAppBelievesItIsFloating || gBorrowedLayer || !gAppController) return;
+    uint64_t payload = lcVideoPayload(gAppController);
+    NSLog(@"[LCGuestPiP] floating (%s): context %u, %ux%u", why,
+          (uint32_t)payload, (uint32_t)((payload >> 32) & 0xFFFF), (uint32_t)((payload >> 48) & 0xFFFF));
+    if(payload == 0) return;
+    gIntendedPlaying = YES;
+    lcStartPublishingPlaybackState();
+    lcRequestFloat(payload);
+
+    // Nothing may come of it: leaving FlekDeck is only a guess that a float is
+    // wanted, and a swipe can be cancelled. The video is given back if no float
+    // has begun shortly after, or the app's window would be left empty.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if(gAppBelievesItIsFloating || !gBorrowedLayer) return;
+        NSLog(@"[LCGuestPiP] no float appeared; taking the video back");
+        lcUnpublishVideoContext();
+    });
+}
+
 static void (*orig_startPictureInPicture)(id, SEL);
 static void lc_startPictureInPicture(id self, SEL _cmd) {
     // Not forwarded. Calling through is what produces the empty window.
     gAppController = self;
-    uint64_t payload = lcVideoPayload(self);
-    NSLog(@"[LCGuestPiP] start requested, handing to host (context %u, %ux%u)",
-          (uint32_t)payload, (uint32_t)((payload >> 32) & 0xFFFF), (uint32_t)((payload >> 48) & 0xFFFF));
-    gIntendedPlaying = YES;
-    if(payload != 0) lcStartPublishingPlaybackState();
-    lcRequestFloat(payload);
-    // After the request, so the app's placeholder appears as its video leaves,
-    // and its player and playback delegate stay alive for the host to drive.
-    if(payload != 0) lcTellAppFloating();
+    lcFloatNow("button");
 }
 
 /// The app's own answer is no — it never started one — but as far as it is
@@ -828,6 +921,14 @@ static void lc_setCanStartAutomatically(id self, SEL _cmd, BOOL value) {
     if(orig_setCanStartAutomatically) {
         orig_setCanStartAutomatically(self, _cmd, NO);
     }
+
+    // The app asking for automatic PiP is the first moment it is known to have a
+    // video worth floating, and which shape it is. The host is told now so that
+    // the controller it keeps armed is the video-shaped one: AVKit will only
+    // start a controller that already existed when the app backgrounded, and the
+    // wrong one armed is why leaving FlekDeck floated the whole window.
+    gAppController = self;
+    if(value) lcStartWatchingVideoSize();
 }
 
 static void (*orig_setShouldStartWhenEnteringBackground)(id, SEL, BOOL);
@@ -928,6 +1029,8 @@ void LCGuestPiPInit(NSString *dataUUID) {
     gPlayName = [base stringByAppendingString:@".command.play"];
     gSkipName = [base stringByAppendingString:@".command.skip"];
     gVideoRectName = [base stringByAppendingString:@".videorect"];
+    gVideoReadyName = [base stringByAppendingString:@".videoready"];
+    gStartedName = [base stringByAppendingString:@".started"];
 
     lcInstallHooks();
     _dyld_register_func_for_add_image(lcPiPImageAdded);
@@ -960,6 +1063,25 @@ void LCGuestPiPInit(NSString *dataUUID) {
         if(deciseconds & 0x800000000000ULL) deciseconds |= ~0xFFFFFFFFFFFFULL;
         lcHandleSkip(deciseconds);
     });
+
+    // The float has actually begun. Only now is the app told, so its placeholder
+    // replaces a video that really has gone somewhere.
+    static int startedToken;
+    notify_register_dispatch(gStartedName.UTF8String, &startedToken,
+                             dispatch_get_main_queue(), ^(int token) {
+        lcTellAppFloating();
+    });
+
+    // Leaving FlekDeck is the other way in. The app's own automatic PiP is pinned
+    // off — it would only produce the empty window — so this stands in for it,
+    // doing exactly what its button does. Named as a literal because this file
+    // deliberately does not import UIKit, and a notification name is only a
+    // string.
+    [NSNotificationCenter.defaultCenter addObserverForName:@"UIApplicationWillResignActiveNotification"
+                                                    object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(NSNotification *note) {
+        lcFloatNow("leaving FlekDeck");
+    }];
 
     NSLog(@"[LCGuestPiP] armed on %@ (ended %u, command %u)", base, status, commandStatus);
 }

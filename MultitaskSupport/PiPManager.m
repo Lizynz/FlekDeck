@@ -295,6 +295,10 @@ API_AVAILABLE(ios(16.0))
 /// three live exactly as long as one video-context PiP.
 @property(nonatomic, strong) UIView *videoShimView;
 @property(nonatomic, strong) AVSampleBufferDisplayLayer *videoShimLayer;
+/// The layer host showing the guest's context. Kept so its id can be filled in
+/// once the guest publishes, which is at the last moment before the float — the
+/// controller itself has to be armed long before that.
+@property(nonatomic, strong) CALayerHost *videoHostLayer;
 @property(nonatomic, strong) LCGuestPlaybackProxy *playbackProxy;
 /// Notification observers holding the guest's scene foreground while its video
 /// floats. Nil when nothing is floating.
@@ -369,6 +373,7 @@ static PiPManager* sharedInstance = nil;
     [self.videoShimView removeFromSuperview];
     self.videoShimView = nil;
     self.videoShimLayer = nil;
+    self.videoHostLayer = nil;
     self.playbackProxy = nil;
 }
 
@@ -382,7 +387,7 @@ static PiPManager* sharedInstance = nil;
     // can show the video by itself instead of a shrunken copy of the whole app.
     // Nothing is copied to do it: the context is rendered where it always was and
     // this only says where else to show it.
-    if(self.preparedVideoContextId != 0) {
+    if(vc.guestHasVideo || self.preparedVideoContextId != 0) {
         CGSize videoSize = vc.guestVideoSize;
         if(videoSize.width < 1 || videoSize.height < 1) videoSize = vc.view.bounds.size;
         self.pipVideoCallViewController = nil;
@@ -456,6 +461,7 @@ static PiPManager* sharedInstance = nil;
         [vc.view insertSubview:shimView atIndex:0];
         self.videoShimView = shimView;
         self.videoShimLayer = shim;
+        self.videoHostLayer = videoHost;
 
         LCGuestPlaybackProxy *proxy = [[LCGuestPlaybackProxy alloc] initWithDataUUID:vc.dataUUID];
         proxy.shimLayer = shim;
@@ -523,6 +529,36 @@ static PiPManager* sharedInstance = nil;
     self.displayingVC = nil;
 }
 
+- (void)rearmForVC:(AppSceneViewController*)vc {
+    if(self.isPiP || self.isStartingPiP) return;
+    if(self.displayingVC && self.displayingVC != vc) return;
+
+    // Resized in place when there is already a video controller armed for this
+    // window, rather than torn down and built again. Rebuilding is what made
+    // floating unreliable: a fresh controller has to tell SpringBoard it may
+    // start on backgrounding, that goes over XPC, and one built moments before
+    // the user leaves has not finished saying so — hence a float that sometimes
+    // simply never appeared. The video's measurement changes while the player
+    // settles, so this happens more than once per window.
+    if(self.videoShimLayer && self.videoHostLayer && self.displayingVC == vc) {
+        CGSize size = vc.guestVideoSize;
+        if(size.width < 1 || size.height < 1) return;
+        if(CGSizeEqualToSize(self.videoShimLayer.bounds.size, size)) return;
+        NSLog(@"[LC] armed video resized to %dx%d", (int)size.width, (int)size.height);
+        self.videoShimLayer.frame = CGRectMake(0, 0, size.width, size.height);
+        self.videoHostLayer.frame = self.videoShimLayer.bounds;
+        self.videoShimView.frame = self.videoShimLayer.frame;
+        // The window's shape comes from the layer's video dimensions, which come
+        // from what was last enqueued into it — so the new shape has to be
+        // enqueued, not just assigned.
+        LCEnqueueBlackFrame(self.videoShimLayer, size);
+        return;
+    }
+
+    [self disarmIfInactive];
+    [self armForVC:vc];
+}
+
 - (void)disarmIfInactiveForVC:(AppSceneViewController*)vc {
     // Someone else's turn to be armed; leaving it alone is the point of asking.
     if(self.displayingVC != vc) return;
@@ -537,6 +573,29 @@ static PiPManager* sharedInstance = nil;
     // it was not offering when it was armed, which is the ordinary case: a window
     // is armed as soon as it comes to the front, and its guest only publishes
     // video when it asks to float.
+    // Armed around this window's video already, with only the context id left to
+    // fill in — the ordinary case now, since the controller is built as soon as
+    // the guest reports it has a video and the guest publishes only at the last
+    // moment, publishing being what takes the video out of the app's own window.
+    if(self.pipController && self.displayingVC == vc && !self.isPiP
+       && self.videoHostLayer && vc.guestVideoContextId != 0) {
+        self.preparedVideoContextId = vc.guestVideoContextId;
+        self.videoHostLayer.contextId = vc.guestVideoContextId;
+
+        // Started by hand only while LiveContainer is still foreground active,
+        // which is to say only when the guest's button asked. AVKit refuses
+        // otherwise — "The UIScene for the content source has an activation state
+        // other than UISceneActivationStateForegroundActive" — and on the way out
+        // nothing needs calling: the controller has been armed since the guest
+        // first reported a video, and AVKit starts it on backgrounding itself.
+        if(UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
+            NSLog(@"[LC] video context %u armed; leaving the start to AVKit", vc.guestVideoContextId);
+            return;
+        }
+        self.isStartingPiP = YES;
+        [self.pipController startPictureInPicture];
+        return;
+    }
     if(self.pipController && self.displayingVC == vc && !self.isPiP
        && self.preparedVideoContextId == vc.guestVideoContextId) {
         self.isStartingPiP = YES;
@@ -605,6 +664,10 @@ static PiPManager* sharedInstance = nil;
     // nothing. Leaving the app on stage behind its own floating video is what PiP
     // does everywhere else in any case.
     if(self.preparedVideoContextId != 0) {
+        // Now, and not before: the app puts a placeholder where its video was as
+        // soon as it hears this, so it must not hear it until there is a floating
+        // window to put the video in.
+        [self.displayingVC notifyGuestPiPStarted];
         [self.displayingVC setBackgroundNotificationEnabled:false];
         self.displayingVC.shouldIgnoreSceneUpdates = YES;
         [self beginKeepingGuestOnStage];
@@ -746,6 +809,12 @@ static PiPManager* sharedInstance = nil;
     // the window still floats — as the whole app, the way it did before any of
     // this — rather than not floating at all. The guest takes its video layer back
     // first, or the window it floats would be the one with the video missing.
+    // Refused only because the scene is no longer foreground active. The armed
+    // controller is still good and AVKit starts it on its own as the app
+    // backgrounds; falling back here would swap the video for the whole window
+    // for no reason.
+    if(error.code == -1001) return;
+
     AppSceneViewController *vc = self.displayingVC;
     if(self.preparedVideoContextId != 0 && vc) {
         NSLog(@"[LC] falling back to floating the whole window");

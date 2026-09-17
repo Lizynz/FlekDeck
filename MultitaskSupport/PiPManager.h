@@ -31,5 +31,9 @@ API_AVAILABLE(ios(16.0))
 /// `disarmIfInactive`, but only when it is `vc` that is armed — for a window on
 /// its way out, which must not take another window's readiness with it.
 - (void)disarmIfInactiveForVC:(AppSceneViewController*)vc;
+/// Builds the armed controller again for `vc`, because what it should be built
+/// around has changed — the guest reporting it has a video, which decides whether
+/// leaving FlekDeck floats the video or the whole window.
+- (void)rearmForVC:(AppSceneViewController*)vc;
 
 @end

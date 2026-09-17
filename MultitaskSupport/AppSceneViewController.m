@@ -292,6 +292,7 @@ static void LCUnstageAppFromAppGroup(NSString *bundleId, NSString *dataUUID, BOO
 /// Registrations on the guest's PiP requests, for as long as the guest is running.
 @property(nonatomic) NSNumber *pipStartToken;
 @property(nonatomic) NSNumber *pipStopToken;
+@property(nonatomic) NSNumber *pipReadyToken;
 @end
 
 /// The device orientation to hand a guest, derived from the orientation UIKit has
@@ -842,6 +843,16 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
         self.pipStartToken = @(startToken);
     }
 
+    int readyToken = 0;
+    if(notify_register_dispatch([base stringByAppendingString:@".videoready"].UTF8String, &readyToken,
+                                dispatch_get_main_queue(), ^(int token) {
+        uint64_t state = 0;
+        notify_get_state(token, &state);
+        [weakSelf handleGuestVideoReady:CGSizeMake(state & 0xFFFF, (state >> 16) & 0xFFFF)];
+    }) == NOTIFY_STATUS_OK) {
+        self.pipReadyToken = @(readyToken);
+    }
+
     int stopToken = 0;
     if(notify_register_dispatch([base stringByAppendingString:@".stop"].UTF8String, &stopToken,
                                 dispatch_get_main_queue(), ^(int token) {
@@ -860,6 +871,27 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
         notify_cancel(self.pipStopToken.intValue);
         self.pipStopToken = nil;
     }
+    if(self.pipReadyToken) {
+        notify_cancel(self.pipReadyToken.intValue);
+        self.pipReadyToken = nil;
+    }
+}
+
+/// The guest has a video and has said how big it is, long before anything floats.
+/// Re-arms, so the controller standing ready is the video-shaped one.
+- (void)handleGuestVideoReady:(CGSize)size {
+    if(size.width < 1 || size.height < 1) return;
+    if(self.guestHasVideo && CGSizeEqualToSize(self.guestVideoSize, size)) return;
+    NSLog(@"[LC] %@ has a video, %dx%d", self.bundleId, (int)size.width, (int)size.height);
+    self.guestHasVideo = YES;
+    self.guestVideoSize = size;
+    self.guestVideoRect = CGRectMake(0, 0, size.width, size.height);
+    [PiPManager.shared rearmForVC:self];
+}
+
+- (void)notifyGuestPiPStarted {
+    NSString *name = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.started", self.dataUUID];
+    notify_post(name.UTF8String);
 }
 
 - (void)notifyGuestPiPEnded {
