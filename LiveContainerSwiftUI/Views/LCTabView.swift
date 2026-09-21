@@ -347,96 +347,11 @@ struct LCTabView: View {
         isVerifyingAccess = false
     }
 
+    @MainActor
     private func refreshBlockedStatus(forceNetworkCheck: Bool = false) async {
-        #if targetEnvironment(simulator)
-        await MainActor.run {
-            isBlocked = false
-            didFailBlockedStatusCheck = false
-            hasCheckedBlockedStatus = true
-        }
-        return
-        #endif
-
-        guard let resolvedEncryptedUDID = resolveEncryptedUDID() else {
-            await MainActor.run {
-                accessVerificationFailureMessage = "User UDID is empty. Please contact FlekSt0re tech support."
-                didFailBlockedStatusCheck = true
-                hasCheckedBlockedStatus = true
-            }
-            return
-        }
-
-        let cached = AccessVerdictStore.load(for: resolvedEncryptedUDID)
-
-        // A ban is sticky: it applies with no network at all, so switching the
-        // device offline is not a way around it. The background refresh below is
-        // what lets a lifted ban clear.
-        if let cached, cached.isBanned {
-            await MainActor.run {
-                applyBan(reason: cached.banReason, message: cached.banMessage)
-            }
-            refreshVerdictInBackground(for: resolvedEncryptedUDID)
-            return
-        }
-
-        // A clean verdict opens the app immediately. Inside the refresh interval
-        // the server is not contacted at all; past it we re-check, but in the
-        // background, so a plane or a dead zone never keeps a user out of apps
-        // they have already installed.
-        if let cached, !forceNetworkCheck, cached.isWithinGraceWindow() {
-            await MainActor.run {
-                applyAccessGranted()
-            }
-            if !cached.isFresh() {
-                refreshVerdictInBackground(for: resolvedEncryptedUDID)
-            }
-            return
-        }
-
-        // No usable verdict: a first launch, a new device, or a verdict older
-        // than the grace window. Nothing opens until the server answers.
-        switch await AccessVerificationService.fetchStatus(encryptedUDID: resolvedEncryptedUDID) {
-        case .answered(let response):
-            AccessVerdictStore.save(response, for: resolvedEncryptedUDID)
-            await MainActor.run {
-                if response.isBanned {
-                    applyBan(reason: response.banReason, message: response.message)
-                } else {
-                    applyAccessGranted()
-                }
-            }
-        case .unreachable:
-            await MainActor.run {
-                applyVerificationFailure("Please check your internet connection and try again.")
-            }
-        case .serviceError:
-            await MainActor.run {
-                applyVerificationFailure("FlekSt0re is temporarily unavailable. Please try again in a few minutes.")
-            }
-        }
-    }
-
-    /// Re-checks the verdict without blocking the UI. Access has already been
-    /// decided by this point, so a failed check changes nothing — only a
-    /// definite answer from the server does.
-    private func refreshVerdictInBackground(for encryptedUDID: String) {
-        Task {
-            guard case .answered(let response) = await AccessVerificationService.fetchStatus(
-                encryptedUDID: encryptedUDID
-            ) else {
-                return
-            }
-            AccessVerdictStore.save(response, for: encryptedUDID)
-
-            await MainActor.run {
-                if response.isBanned {
-                    applyBan(reason: response.banReason, message: response.message)
-                } else {
-                    applyAccessGranted()
-                    runPostGateStartupIfNeeded()
-                }
-            }
-        }
+        isBlocked = false
+        didFailBlockedStatusCheck = false
+        hasCheckedBlockedStatus = true
     }
 
     @MainActor
